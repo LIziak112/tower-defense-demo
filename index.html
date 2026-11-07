@@ -1,15 +1,24 @@
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tower Defense Demo v0.1</title>
-    <link rel="stylesheet" href="/style.css">
-    <script src="/src/runtime.js" type="module"></script>
-    <script src="/src/main.js" type="module"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tower Defense Demo · D1</title>
+  <style>
+    body { margin: 0; background: #11161d; color: #e8e8e8; font-family: system-ui, "PingFang SC", sans-serif; }
+    #game-container { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; }
+    #hud { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 16px; }
+    #hud button { padding: 6px 12px; border-radius: 6px; border: 1px solid #555; background: #2b3846; color: #eee; cursor: pointer; }
+    #hud button.sel { border-color: #ffd36a; background: #4a3d1e; }
+    #hud button:disabled { opacity: .4; cursor: default; }
+    .toast { color: #ff9a8a; }
+    #board { max-width: 100%; height: auto; cursor: crosshair; }
+    #debug { font: 12px monospace; background: #000a; padding: 6px 10px; margin: 0; max-width: 672px; white-space: pre-wrap; }
+  </style>
 </head>
 <body>
-    <div id="game-container"></div>
-    <div id="ui-layer"></div>
+  <div id="game-container"></div>
+  <!-- D1 entry: new deterministic runtime. Legacy src/main.js + src/runtime.js are kept (not deleted) for migration reference. -->
+  <script type="module" src="/src/game/main.ts"></script>
 </body>
 </html>

@@ -5,10 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "tsc -p . && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
   },
   "devDependencies": {
-    "vite": "^5.2.0"
+    "@types/node": "^22.20.5",
+    "phaser": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.2.0",
+    "vitest": "^4.1.12",
+    "zod": "^4.6.7"
   }
 }
