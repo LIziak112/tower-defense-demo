@@ -1,0 +1,28 @@
+{
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "extends": [
+    "eslint:recommended"
+  ],
+  "parserOptions": {
+    "ecmaVersion": 13,
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-restricted-imports": ["error", {
+      "patterns": ["phaser"]
+    }],
+    "no-restricted-globals": ["error",
+      {
+        "name": "crypto",
+        "message": "Use determinist random instead of crypto"
+      },
+      {
+        "name": "setTimeout",
+        "message": "Use game timer instead of setTimeout"
+      }
+    ]
+  }
+}
