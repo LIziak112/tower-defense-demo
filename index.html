@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>墨阵 · 守少主</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">AI 文字合成策略塔防 · DEMO</p><h1>墨阵 · 守少主</h1></div><span id="check" class="check">完整局校验中</span></header>
+    <section id="creator" class="creator panel">
+      <div class="seal">策</div><p class="eyebrow">请军师定今日战局</p><h2>你想打一场怎样的仗？</h2>
+      <p class="intro">AI 只生成受校验的地图、兵种数值和波次；战斗仍由固定 tick Runtime 决定。</p>
+      <div class="prompt-row"><input id="idea" value="长坂坡雨夜，敌军人多但行军缓慢" aria-label="战局描述" /><button id="generate">生成战局</button></div>
+      <p id="ai-status" class="muted"></p><article id="design-card" class="design-card hidden"></article>
+    </section>
+    <section id="game" class="game hidden">
+      <div class="hud panel"><div><span>我方少主</span><strong id="base">命命命命命命</strong></div><div><span>敌方少主</span><strong id="enemy-base">命命命命命命</strong></div><div><span>馒头</span><strong id="gold">100</strong></div><div><span>战局</span><strong id="wave">整军</strong></div><div><span>状态</span><strong id="state">布阵中</strong></div></div>
+      <div class="battle-layout">
+        <div><div class="arena-wrap"><canvas id="board" width="864" height="432" aria-label="文字塔防战场"></canvas><div class="camp enemy-camp"><span>敌阵</span><b id="enemy-banner">魏</b></div><div class="camp player-camp"><span>本阵</span><b>蜀</b></div><div id="toast" class="toast"></div><div id="result" class="result hidden"></div></div>
+          <section class="formation-panel panel"><div class="formation-head"><div><p class="eyebrow">战场阵位</p><h3>拖动同字同级合成，金字相邻可成武将</h3></div><span id="slots-copy">6/12 格已开</span></div><div id="formation" class="formation" aria-label="布阵格"></div></section>
+        </div>
+        <aside class="side panel">
+          <div class="resource"><span>军粮</span><strong><i>◉</i> <b id="buns">100</b></strong></div><button id="recruit" class="recruit">征兵 <span id="recruit-cost">8</span> 馒头</button>
+          <p class="hint">随机获得刀、枪、弓、骑、武将字牌或铲子。点击字牌后再点阵位，也可直接拖放。</p><div id="bench" class="bench" aria-label="待命区"></div>
+          <div class="tool-row"><button id="auto-build" class="small">一键整军</button><button id="clear-bench" class="small">清理待命</button></div><hr />
+          <div class="wave-info"><span>本波剩余</span><strong id="remaining">—</strong></div><div class="tool-row transport"><button id="speed" class="small">速度 ×1</button><button id="pause" class="small">暂停</button><button id="sound" class="small">声音：开</button></div><button id="wave-button" class="primary wide">迎战第 1 波</button><hr />
+          <h3>AI 军师</h3><p class="muted">仅在波次间隙调整下一波，不进入战斗 tick。</p><textarea id="adjust-text" placeholder="下一波来狠一点 / 先放点水" disabled></textarea><button id="adjust" disabled>提交受限军令</button><p id="adjust-reply" class="reply"></p><button id="restart" class="link-btn">返回战局设计</button>
+        </aside>
+      </div>
+    </section>
+    <footer>玩法参考文字合成塔防；未复制原作美术、音频或文案。程序字体与 Kenney 特效素材均为开放许可资源。</footer>
+  </main><script src="runtime.js"></script><script src="app.js"></script>
+</body>
+</html>
