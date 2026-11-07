@@ -40,7 +40,7 @@ function renderHud() {
   hud.innerHTML = '';
   const info = document.createElement('span');
   info.className = 'stats';
-  info.textContent = `基地 ${s.base_hp}/${pack.map.base_hp}　金币 ${s.gold}　波次 ${s.wave_index}/${pack.waves.length}　${phaseText}`;
+  info.textContent = `基地 ${s.base_hp}/${pack.map.base_hp} 金币 ${s.gold} 波次 ${s.wave_index}/${pack.waves.length} ${phaseText}`;
   hud.append(info);
   for (const t of pack.towers) {
     const b = document.createElement('button');
@@ -151,4 +151,4 @@ function frame(now: number) {
 }
 renderHud();
 requestAnimationFrame(frame);
-(window as any).__td = { get state() { return state; }, checksum: () => checksum(state), recorded };
+(window as unknown as { __td: unknown }).__td = { get state() { return state; }, checksum: () => checksum(state), recorded };
