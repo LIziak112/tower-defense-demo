@@ -1,0 +1,425 @@
+{
+ "meta": {
+  "theme": "沼泽·毒雾",
+  "description": "怪慢但肉，后两波巨人带虫群"
+ },
+ "towers": [
+  {
+   "id": "thorn",
+   "display_name": "荆棘塔",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 15,
+     "range_milli": 2500,
+     "interval_ticks": 20
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 60
+    },
+    "Presentation": {
+     "asset_id": "tower_nature_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  },
+  {
+   "id": "poison",
+   "display_name": "毒雾塔",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 6,
+     "range_milli": 2000,
+     "interval_ticks": 8
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 90
+    },
+    "Presentation": {
+     "asset_id": "tower_poison_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  },
+  {
+   "id": "stone",
+   "display_name": "石像塔",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 60,
+     "range_milli": 3000,
+     "interval_ticks": 75
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 130
+    },
+    "Presentation": {
+     "asset_id": "tower_stone_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  }
+ ],
+ "enemies": [
+  {
+   "id": "bog_golem",
+   "display_name": "泥沼巨人",
+   "components": {
+    "Health": {
+     "max": 220
+    },
+    "Movement": {
+     "speed_milli_per_tick": 25
+    },
+    "PathFollower": {
+     "base_damage": 2
+    },
+    "Reward": {
+     "gold": 30
+    },
+    "Presentation": {
+     "asset_id": "enemy_golem_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  },
+  {
+   "id": "swamp_frog",
+   "display_name": "沼泽蛙",
+   "components": {
+    "Health": {
+     "max": 80
+    },
+    "Movement": {
+     "speed_milli_per_tick": 55
+    },
+    "PathFollower": {
+     "base_damage": 1
+    },
+    "Reward": {
+     "gold": 8
+    },
+    "Presentation": {
+     "asset_id": "enemy_frog_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  },
+  {
+   "id": "miasma_bug",
+   "display_name": "瘴气虫",
+   "components": {
+    "Health": {
+     "max": 30
+    },
+    "Movement": {
+     "speed_milli_per_tick": 40
+    },
+    "PathFollower": {
+     "base_damage": 1
+    },
+    "Reward": {
+     "gold": 3
+    },
+    "Presentation": {
+     "asset_id": "enemy_bug_01",
+     "palette_id": "swamp_mist"
+    }
+   }
+  }
+ ],
+ "map": {
+  "grid": {
+   "width": 12,
+   "height": 9
+  },
+  "path": [
+   [
+    0,
+    4
+   ],
+   [
+    4,
+    4
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    8,
+    1
+   ],
+   [
+    8,
+    7
+   ],
+   [
+    11,
+    7
+   ]
+  ],
+  "buildable_cells": [
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    5,
+    0
+   ],
+   [
+    6,
+    0
+   ],
+   [
+    7,
+    0
+   ],
+   [
+    8,
+    0
+   ],
+   [
+    9,
+    0
+   ],
+   [
+    3,
+    1
+   ],
+   [
+    9,
+    1
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    5,
+    2
+   ],
+   [
+    6,
+    2
+   ],
+   [
+    7,
+    2
+   ],
+   [
+    9,
+    2
+   ],
+   [
+    0,
+    3
+   ],
+   [
+    1,
+    3
+   ],
+   [
+    2,
+    3
+   ],
+   [
+    3,
+    3
+   ],
+   [
+    5,
+    3
+   ],
+   [
+    7,
+    3
+   ],
+   [
+    9,
+    3
+   ],
+   [
+    5,
+    4
+   ],
+   [
+    7,
+    4
+   ],
+   [
+    9,
+    4
+   ],
+   [
+    0,
+    5
+   ],
+   [
+    1,
+    5
+   ],
+   [
+    2,
+    5
+   ],
+   [
+    3,
+    5
+   ],
+   [
+    4,
+    5
+   ],
+   [
+    5,
+    5
+   ],
+   [
+    7,
+    5
+   ],
+   [
+    9,
+    5
+   ],
+   [
+    7,
+    6
+   ],
+   [
+    9,
+    6
+   ],
+   [
+    10,
+    6
+   ],
+   [
+    11,
+    6
+   ],
+   [
+    7,
+    7
+   ],
+   [
+    7,
+    8
+   ],
+   [
+    8,
+    8
+   ],
+   [
+    9,
+    8
+   ],
+   [
+    10,
+    8
+   ],
+   [
+    11,
+    8
+   ]
+  ],
+  "base": {
+   "max_health": 20
+  },
+  "starting_gold": 180,
+  "presentation": {
+   "tileset_id": "swamp",
+   "palette_id": "swamp_mist"
+  }
+ },
+ "waves": [
+  {
+   "id": "w1",
+   "groups": [
+    {
+     "enemy_id": "miasma_bug",
+     "count": 10,
+     "interval_ticks": 15
+    }
+   ]
+  },
+  {
+   "id": "w2",
+   "groups": [
+    {
+     "enemy_id": "swamp_frog",
+     "count": 8,
+     "interval_ticks": 25
+    }
+   ]
+  },
+  {
+   "id": "w3",
+   "groups": [
+    {
+     "enemy_id": "bog_golem",
+     "count": 4,
+     "interval_ticks": 60
+    },
+    {
+     "enemy_id": "miasma_bug",
+     "count": 8,
+     "interval_ticks": 12
+    }
+   ]
+  },
+  {
+   "id": "w4",
+   "groups": [
+    {
+     "enemy_id": "bog_golem",
+     "count": 6,
+     "interval_ticks": 50
+    },
+    {
+     "enemy_id": "swamp_frog",
+     "count": 8,
+     "interval_ticks": 20
+    }
+   ]
+  },
+  {
+   "id": "w5",
+   "groups": [
+    {
+     "enemy_id": "bog_golem",
+     "count": 8,
+     "interval_ticks": 45
+    },
+    {
+     "enemy_id": "miasma_bug",
+     "count": 12,
+     "interval_ticks": 12
+    }
+   ]
+  }
+ ]
+}

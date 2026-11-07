@@ -1,0 +1,25 @@
+{
+  "note": "D2 程序化素材清单（占位：表现层按 asset_id 用基本形状绘制；Hikos 城市皮肤素材待 Ada 规范确定后另行登记）",
+  "assets": [
+    { "asset_id": "tower_crossbow_01", "kind": "tower", "desc": "弩车：方形底座 + 长弩臂" },
+    { "asset_id": "tower_catapult_01", "kind": "tower", "desc": "投石车：圆底座 + 长杆" },
+    { "asset_id": "tower_fire_01", "kind": "tower", "desc": "火油台：三角形火盆" },
+    { "asset_id": "tower_nature_01", "kind": "tower", "desc": "荆棘塔：带刺圆柱" },
+    { "asset_id": "tower_poison_01", "kind": "tower", "desc": "毒雾塔：圆罐 + 雾气" },
+    { "asset_id": "tower_stone_01", "kind": "tower", "desc": "石像塔：厚重石块" },
+    { "asset_id": "enemy_foot_01", "kind": "enemy", "desc": "步卒：圆形持盾" },
+    { "asset_id": "enemy_cavalry_01", "kind": "enemy", "desc": "轻骑：细长快速" },
+    { "asset_id": "enemy_heavy_01", "kind": "enemy", "desc": "重甲：大方块" },
+    { "asset_id": "enemy_golem_01", "kind": "enemy", "desc": "泥沼巨人：高大岩石人形" },
+    { "asset_id": "enemy_frog_01", "kind": "enemy", "desc": "沼泽蛙：小而快" },
+    { "asset_id": "enemy_bug_01", "kind": "enemy", "desc": "瘴气虫：群体小虫" }
+  ],
+  "palettes": [
+    { "palette_id": "ink_night", "colors": { "bg": "#0E1116", "ground": "#1C2430", "path": "#4A3F35", "gold": "#E8C170", "enemy": "#C84B4B", "friend": "#6FB1FF", "text": "#E6E8EC" } },
+    { "palette_id": "swamp_mist", "colors": { "bg": "#0B1410", "ground": "#16271D", "path": "#3F3A26", "gold": "#B5E853", "enemy": "#A64DFF", "friend": "#5FD3A6", "text": "#E3EFE7" } }
+  ],
+  "tilesets": [
+    { "tileset_id": "plain_night", "desc": "雨夜平原" },
+    { "tileset_id": "swamp", "desc": "沼泽" }
+  ]
+}

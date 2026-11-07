@@ -1,18 +1,25 @@
 // D1 presenter: fixed 30 tick/s accumulator loop; rendering only reads state, all rules in runtime.
 import { createBattle, step, checksum, TICKS_PER_SECOND, CELL } from '../runtime/index';
 import type { BattleState, Command, GameEvent } from '../runtime/index';
-import { DEFAULT_PACK, PATH_CELLS } from '../content/default';
+import { DEFAULT_PACK } from '../content/default';
+import { MockProvider } from '../ai/mock';
+import { runPipeline, type Summary } from '../ai/pipeline';
+import type { ContentPack } from '../runtime/index';
+import { expandPath } from '../content/validate';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
 const DEBUG = params.has('debug');
 const TICK_MS = 1000 / TICKS_PER_SECOND;
 const PX = 56; // px per cell
-const pack = DEFAULT_PACK;
+let pack: ContentPack = DEFAULT_PACK;
+let PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
+const provider = new MockProvider();
 
 let state: BattleState = createBattle(pack, SEED);
 let queue: Command[] = [];
 let selected = pack.towers[0].id;
+let inLobby = !params.has('skiplobby');
 let speed = 1;
 let paused = false;
 let toast = '';
@@ -56,7 +63,7 @@ function renderHud() {
   w.textContent = s.phase === 'won' || s.phase === 'lost' ? '重新开始' : '出兵';
   w.disabled = s.phase === 'wave';
   w.onclick = () => {
-    if (s.phase === 'won' || s.phase === 'lost') { state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; renderHud(); }
+    if (s.phase === 'won' || s.phase === 'lost') { startWith(pack); showLobby(); }
     else queue.push({ type: 'start_wave' });
   };
   hud.append(w);
@@ -143,12 +150,51 @@ function draw() {
 
 let acc = 0; let last = performance.now();
 function frame(now: number) {
-  acc += Math.min(250, now - last) * (paused ? 0 : speed); last = now;
+  acc += Math.min(250, now - last) * (paused || inLobby ? 0 : speed); last = now;
   let n = 0;
   while (acc >= TICK_MS && n < 16) { tickOnce(); acc -= TICK_MS; n++; }
   draw();
   requestAnimationFrame(frame);
 }
+
+// ---- D2 lobby: describe -> Mock 军师 -> validate -> dry-run -> summary card -> 开始 / 再改改 ----
+const lobby = document.createElement('div');
+lobby.id = 'lobby';
+root.append(lobby);
+function esc(t: string) { return t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!)); }
+function showLobby(sum?: Summary, text = '') {
+  inLobby = true; lobby.style.display = 'block';
+  lobby.innerHTML = `<div class="card"><h3>军师议事 <small>${esc(provider.name)}</small></h3>
+  <textarea id="desc" rows="2" placeholder="描述你想要的战局，例如：长坂坡雨夜，人海战术">${esc(text)}</textarea>
+  <div class="row"><button id="gen">让军师设计</button></div>
+  <div id="summary"></div></div>`;
+  const out = lobby.querySelector('#summary')!;
+  if (sum) {
+    const dr = sum.dryrun.map((d) => `${d.bot === 'greedy' ? '贪心放塔' : '不放塔'}：${d.result === 'won' ? '胜' : d.result === 'lost' ? '负' : '超时'}（基地剩 ${d.base_hp}，漏 ${d.leaks}）`).join('；');
+    out.innerHTML = `<p class="echo">${esc(sum.echo)}</p>
+    <p>塔：${esc(sum.towers.join('、'))}<br>怪：${esc(sum.enemies.join('、'))}<br>波次：${sum.waves.map((w, i) => `${i + 1}(${w.total})`).join(' ')}</p>
+    <p class="dry">预演：${esc(dr)}</p>
+    ${sum.warnings.map((w) => `<p class="warn">⚠ ${esc(w.message)}</p>`).join('')}
+    ${sum.errors.slice(0, 5).map((e) => `<p class="err">✗ ${esc(e.message)}（${esc(e.path)}）</p>`).join('')}
+    <div class="row"><button id="go">开始</button><button id="again">再改改</button></div>`;
+    out.querySelector('#go')!.addEventListener('click', () => startWith(sum.pack));
+    out.querySelector('#again')!.addEventListener('click', () => (lobby.querySelector('#desc') as HTMLTextAreaElement).focus());
+  }
+  lobby.querySelector('#gen')!.addEventListener('click', () => {
+    const t = (lobby.querySelector('#desc') as HTMLTextAreaElement).value.trim() || '长坂坡雨夜';
+    showLobby(runPipeline(provider, t), t);
+  });
+}
+function startWith(p: ContentPack) {
+  pack = p;
+  PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
+  canvas.width = pack.map.width * PX; canvas.height = pack.map.height * PX;
+  selected = pack.towers[0].id;
+  state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; queue = [];
+  inLobby = false; lobby.style.display = 'none'; renderHud();
+}
+(window as any).__lobby = { gen: (t: string) => showLobby(runPipeline(provider, t), t) };
+if (inLobby) showLobby(); else lobby.style.display = 'none';
 renderHud();
 requestAnimationFrame(frame);
 (window as any).__td = { get state() { return state; }, checksum: () => checksum(state), recorded };
