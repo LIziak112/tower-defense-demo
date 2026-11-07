@@ -1,0 +1,19 @@
+{
+  "id": "level1",
+  "name": "Level 1: The Beginning",
+  "description": "A simple straight path to get you started.",
+  "map": {
+    "width": 15,
+    "height": 10,
+    "path": [
+      { "x": 0, "y": 5 },
+      { "x": 14, "y": 5 }
+    ]
+  },
+  "towers": [
+    { "id": "basic", "name": "Basic Tower", "cost": 50, "damage": 10, "range": 3, "cooldown": 30 }
+  ],
+  "waves": [
+    { "count": 10, "interval": 60, "enemyHp": 50, "enemySpeed": 1 }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "id": "level2",
+  "name": "Level 2: The Winding Road",
+  "description": "Enemies take a longer path this time.",
+  "map": {
+    "width": 20,
+    "height": 15,
+    "path": [
+      { "x": 0, "y": 2 },
+      { "x": 10, "y": 2 },
+      { "x": 10, "y": 12 },
+      { "x": 19, "y": 12 }
+    ]
+  },
+  "towers": [
+    { "id": "basic", "name": "Basic Tower", "cost": 50, "damage": 10, "range": 3, "cooldown": 30 },
+    { "id": "sniper", "name": "Sniper Tower", "cost": 150, "damage": 40, "range": 7, "cooldown": 90 }
+  ],
+  "waves": [
+    { "count": 15, "interval": 45, "enemyHp": 80, "enemySpeed": 1.2 },
+    { "count": 5, "interval": 120, "enemyHp": 200, "enemySpeed": 0.8 }
+  ]
+}
