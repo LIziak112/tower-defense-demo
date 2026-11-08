@@ -144,6 +144,16 @@ function renderHud() {
   info.className = 'stats';
   info.textContent = `${t('base')} ${s.base_hp}/${pack.map.base_hp}　${t('gold')} ${s.gold}　${t('wave')} ${s.wave_index}/${pack.waves.length}　${paused || hostHidden ? t('paused') : phaseText}`;
   hud.append(info);
+  // 下一波预览：军师快照里的 wave.next 就是这一行——军师知道的，玩家同样看得见（#24353「不泄露玩家尚不可见的信息」）
+  const nextWave = s.phase === 'build' ? pack.waves[s.wave_index] : null;
+  if (nextWave) {
+    const counts = new Map<string, number>();
+    for (const g of nextWave.groups) counts.set(g.enemy_id, (counts.get(g.enemy_id) ?? 0) + g.count);
+    const preview = document.createElement('span');
+    preview.className = 'stats next-wave'; preview.id = 'td-next-wave';
+    preview.textContent = `${lang === 'zh' ? '下一波' : 'Next'}：${[...counts].map(([id, n]) => `${pack.enemies.find((e) => e.id === id)?.display_name ?? id}×${n}`).join(lang === 'zh' ? '、' : ', ')}`;
+    hud.append(preview);
+  }
   for (const tw of pack.towers) {
     const b = document.createElement('button');
     b.textContent = `${tw.display_name} ${tw.cost}`;
