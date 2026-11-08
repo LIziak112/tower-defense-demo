@@ -42,8 +42,15 @@ test('触控连续点触每次只建一座塔 @390x844', async ({ browser }) => 
   await page.waitForSelector('#board', { state: 'visible' });
   const before = await gold(page);
   for (let i = 0; i < 10; i++) await page.keyboard.press('g');
-  await expect.poll(() => gold(page)).toBeGreaterThan(before + 5 * TOWER_COST);
+  // 等金币到账且连续两次读数一致（稳定）后再取基准，避免与加金币竞态
   let g = await gold(page);
+  await expect.poll(async () => {
+    const a = await gold(page);
+    await page.waitForTimeout(400);
+    const b = await gold(page);
+    g = b;
+    return a === b && b > before + 5 * TOWER_COST;
+  }, { timeout: 15_000 }).toBe(true);
   for (const cx of [1, 2, 3, 5, 6]) {
     const c = await cell(page, cx, 0);
     await page.touchscreen.tap(c.x, c.y);
