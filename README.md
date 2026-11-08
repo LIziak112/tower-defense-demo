@@ -97,6 +97,17 @@ AI 提议，Runtime 裁决；战斗 tick 内不调用 AI。新内容优先组合
 
 文字单位、转向后坐、弹道、命中、爆炸、音效、暂停、倍速和结算均已实现。项目没有复制参考作品的美术、音频或文案；字体来自开放许可的 Google Fonts，爆炸素材来自 Kenney Tower Defense Top-Down（CC0），许可证位于 `assets/game/LICENSE-KENNEY.txt`。
 
+## 嵌入 Hikos（space.hikos.cn/arcade/tower-defense/）
+
+游戏作为纯静态站同源托管在 Hikos 的 `/arcade/tower-defense/`，由宿主的 arcade 加载项（`krowworker` 仓 `web/hikos/src/addons/arcade.js`）用 `sandbox="allow-scripts"` 的 iframe 打开；契约是计算图书馆的接入说明 `01_接入说明_1b297d9c`（postMessage v1）。游戏侧实现在 `src/game/hikos.ts`（桥接）与 `src/game/skins.ts`（四款开放城市皮肤的配色）。
+
+- 构建：`VITE_BASE=/arcade/tower-defense/ npm run build`，产物 `dist/`（`index.html` + `assets/` + `BUILD.json`），再由宿主仓 `web/scripts/sync-arcade.sh --from-dir dist` 同步进 `web/arcade/tower-defense/` 随 web 镜像发布。
+- 首帧前参数（URL query）：`v=1`、`skin`（如 `union-atlas-3d`）、`accent` / `bg` / `ink`（6 位 hex，去 `#`）、`theme=day|night`、`lang=zh|en`；不认识的皮肤用 `accent/bg/ink` 兜底。
+- 运行中消息：游戏 → 宿主 `td:ready {v:1}`（首帧后）、`td:state {state}`、`td:exit`；宿主 → 游戏 `hikos:context`（换皮肤 / 语言 / 明暗，即时生效）、`hikos:visibility`（`false` 时冻结模拟）、`hikos:size`。只认 `event.source === window.parent` 且 `event.origin` 等于自身站点源（联调可用 `?host=http://localhost:端口` 覆盖）。
+- 不透明源下没有 localStorage / cookie，状态只在内存；不引外站资源。独立打开（不在 iframe 里）时行为不变，`?palette=default|neon|retro` 选内置配色（旧的 `?theme=<名>` 仍认）。
+- 城市皮肤目前只接了**配色**（接入说明 §3.3 的字面量，程序化绘制）；精灵图资产包（任务 435686a6）到位后再接，不要把现在的画面当最终美术。
+- 端到端：`tests/e2e/hikos-embed.spec.ts` 用同源宿主模拟页验证握手往返、可见性暂停、语言 / 皮肤切换与退出。
+
 ## 回归测试
 
 `test-demo.js` 会验证完整三阵通关、重复运行一致性、射击与死亡表现事件、同字升阶、相邻拼名成将和胜利结算。它使用模拟浏览器接口，不替代真实浏览器中的拖放、声音和视觉验收。
