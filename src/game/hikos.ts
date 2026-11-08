@@ -151,8 +151,9 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
 
   const bridge: HostBridge = {
     embedded, origin, context,
-    ready() { if (readySent) return; readySent = true; post({ type: 'td:ready', v: PROTOCOL }); },
-    state(s) { if (!STATES.includes(s) || s === lastState) return; lastState = s; post({ type: 'td:state', state: s }); },
+    // §1.6 顺序：td:ready 永远是第一条出站消息；之前记下的状态在 ready 之后补发一条
+    ready() { if (readySent) return; readySent = true; post({ type: 'td:ready', v: PROTOCOL }); if (lastState) post({ type: 'td:state', state: lastState }); },
+    state(s) { if (!STATES.includes(s) || s === lastState) return; lastState = s; if (readySent) post({ type: 'td:state', state: s }); },
     exit() { post({ type: 'td:exit' }); },
     resize(w, h) { post({ type: 'td:resize', w: Math.round(w), h: Math.round(h) }); },
     dispose() { if (embedded) win.removeEventListener('message', onMessage); },

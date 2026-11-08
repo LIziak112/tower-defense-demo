@@ -40,6 +40,7 @@ test('嵌入：首帧后发 td:ready {v:1}，收到 hikos:context 后按宿主�
   const ready = (await msgs(page)).find((m) => m.type === 'td:ready')!;
   expect(ready.v).toBe(1);
   expect((await types(page)).filter((x) => x === 'td:ready')).toHaveLength(1);
+  expect((await types(page))[0]).toBe('td:ready');   // §1.6：第一条出站消息必须是 td:ready
 
   // 游戏侧确认是嵌入态、认出宿主源、吃到了 context（显示名只有 hikos:context 带）
   await expect.poll(() => game.evaluate(() => (window as any).__td.host.context.name?.zh)).toBe('共和国 · 工业沙盘');

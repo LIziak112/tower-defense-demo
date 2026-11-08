@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { contextFromMessage, contextFromQuery, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
+import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
 
 describe('hikos URL query（接入说明 §1.5）', () => {
@@ -82,5 +82,37 @@ describe('皮肤配色（§2.2 / §3.3 / §3.4）', () => {
     const custom = paletteForContext(contextFromQuery('?accent=112233&bg=f0f0f0&ink=101010'));
     expect(custom.bg).toBe('#f0f0f0'); expect(custom.text).toBe('#101010');
     for (const p of [day, night, custom]) for (const v of Object.values(p)) expect(v).toMatch(/^#[0-9a-f]{6}$/);
+  });
+});
+
+describe('出站顺序（§1.6：td:ready 是第一条）', () => {
+  function fakeWindow(embedded: boolean) {
+    const sent: Record<string, unknown>[] = [];
+    const parent = { postMessage: (m: Record<string, unknown>) => { sent.push(m); } };
+    const win: Record<string, unknown> = {
+      location: { search: '?v=1&skin=union-atlas-3d', origin: 'https://space.hikos.cn' },
+      addEventListener() {}, removeEventListener() {},
+    };
+    win.parent = embedded ? parent : win;
+    return { win: win as unknown as Window, sent };
+  }
+  it('ready 之前报的状态先记着，ready 后紧跟补发一条；之后状态去重', () => {
+    const { win, sent } = fakeWindow(true);
+    const b = createHostBridge(win);
+    b.state('playing');
+    expect(sent).toEqual([]);
+    b.ready(); b.ready();
+    b.state('playing'); b.state('paused');
+    expect(sent.map((m) => m.type)).toEqual(['td:ready', 'td:state', 'td:state']);
+    expect(sent[0]).toEqual({ type: 'td:ready', v: 1 });
+    expect(sent[1]).toEqual({ type: 'td:state', state: 'playing' });
+    expect(sent[2]).toEqual({ type: 'td:state', state: 'paused' });
+  });
+  it('独立打开（不在 iframe 里）什么都不发', () => {
+    const { win, sent } = fakeWindow(false);
+    const b = createHostBridge(win);
+    b.state('playing'); b.ready(); b.exit();
+    expect(b.embedded).toBe(false);
+    expect(sent).toEqual([]);
   });
 });
