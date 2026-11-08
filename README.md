@@ -108,6 +108,16 @@ AI 提议，Runtime 裁决；战斗 tick 内不调用 AI。新内容优先组合
 - 城市皮肤目前只接了**配色**（接入说明 §3.3 的字面量，程序化绘制）；精灵图资产包（任务 435686a6）到位后再接，不要把现在的画面当最终美术。
 - 端到端：`tests/e2e/hikos-embed.spec.ts` 用同源宿主模拟页验证握手往返、可见性暂停、语言 / 皮肤切换与退出。
 
+## 军师（LLM 顾问）
+
+军师是玩家的参谋，不是裁判：每个建造期给两三条有取舍的路（各自一张小卡，点一下采纳），波内每 4 s 一条即时指令，外加三样玩法：**战前押注**（军师押这波漏几只，打完结算，战绩「你 n : m 军师」常驻）、**波间变招**（接下「人海 / 急行 / 硬骨头」之一换下波更狠、现在拿加成金）、**复仇一局**（战局结束后把战报喂给关卡军师，出一张针对弱点的关）。军师说的话只是建议：采纳只产出 `build` 命令，走 `sim.ts` 里与玩家点击完全相同的校验；校验链与规格见 `06_军师规格`（任务 3a53bf89 → fb4d93bc）。
+
+- 代码：`src/advisor/`（`types.ts` 契约与 zod 形状、`snapshot.ts` 最小决策快照、`session.ts` 请求生命周期与校验链、`local.ts` 本地模板兜底、`prompt.ts` 提示词、`channels.ts` 三种通道、`select.ts` 选通道），`src/game/advisorCard.ts`（HUD 卡片与棋盘叠层），`src/runtime/gambit.ts`（变招是规则层的一部分，进校验和）。
+- 通道（`?advisor=`）：`local` 本地模板（零网络，确定性）；`host` 嵌入时经 Hikos 宿主代理（`td:advisor:request` / `hikos:advisor:reply`，宿主只补凭据与 `response_format`，提示词与快照由游戏出）；`http://…` 或 `/path` 是 HTTP 开发代理。缺省：嵌入 → host，独立 → local；嵌入时禁止游戏直连 HTTP。宿主 `hikos:context.advisor {enabled, provider}` 说没配 → 不等截止直接本地。
+- 开发代理：`tools/advisor-proxy.cjs` 是 OpenAI 兼容上游的翻译层，凭据只从运行代理的进程环境读（`ADVISOR_UPSTREAM_URL` / `ADVISOR_API_KEY` / `ADVISOR_MODEL`，可选 `ADVISOR_AUTH_HEADER` / `ADVISOR_JSON_MODE=off`），游戏包里没有任何端点或密钥。`npm run advisor:proxy` 起在 8787，然后开 `http://localhost:5173/?advisor=http://localhost:8787/advisor`。
+- 兜底与门槛：截止 下一波 6 s / 即时 2.5 s / 关卡 20 s；超时 · 断网 · 不成形 · 没有可用选项 → 本地模板上墙并亮「本地模板 · 原因」徽记；即时指令超时或过期（快照老于 60 tick）→ 丢弃一条「军师迟到」；战局已变 → 作废；迟到 / 重复回包 → 丢弃。快照里没有坐标、路径、皮肤、种子或任何用户信息（`FORBIDDEN_KEYS` 在测试里逐键断言）。
+- 测试：`tests/advisor/`（形状与快照、本地模板、§5 六项故障注入、托管否决、押注、变招）、`tests/runtime/gambit.test.ts`、`tests/tools/advisor_proxy.test.ts`、`tests/e2e/advisor.spec.ts`（独立本地 / 宿主正常·慢·坏·关 / HTTP 代理）。
+
 ## 回归测试
 
 `test-demo.js` 会验证完整三阵通关、重复运行一致性、射击与死亡表现事件、同字升阶、相邻拼名成将和胜利结算。它使用模拟浏览器接口，不替代真实浏览器中的拖放、声音和视觉验收。
