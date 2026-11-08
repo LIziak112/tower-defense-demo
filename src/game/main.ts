@@ -99,24 +99,18 @@ canvas.addEventListener('click', (ev) => {
   const x = Math.floor(((ev.clientX - r.left) / r.width) * pack.map.width);
   const y = Math.floor(((ev.clientY - r.top) / r.height) * pack.map.height);
   queue.push({ type: 'build', tower_id: selected, x, y });
+});
 
-canvas.addEventListener('touchstart', (e) => {
-  const t = e.touches[0];
-  const rect = canvas.getBoundingClientRect();
-  
-}, {passive: false});
-
+// 触控：只注册一次；touchend 里 preventDefault 抑制浏览器随后合成的 click，避免一次点触建两座塔
 canvas.addEventListener('touchend', (e) => {
   const t = e.changedTouches[0];
-
+  if (!t) return;
+  e.preventDefault();
   const r = canvas.getBoundingClientRect();
   const x = Math.floor(((t.clientX - r.left) / r.width) * pack.map.width);
   const y = Math.floor(((t.clientY - r.top) / r.height) * pack.map.height);
   queue.push({ type: 'build', tower_id: selected, x, y });
-
-});
-
-});
+}, { passive: false });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'F1' || e.key === '`') { e.preventDefault(); dbg.style.display = dbg.style.display === 'none' ? 'block' : 'none'; }
   if (dbg.style.display === 'none') return;
