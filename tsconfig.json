@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "skipLibCheck": true, "resolveJsonModule": true, "lib": ["ES2020", "DOM"],
     "types": ["vitest/globals", "node"]
   },
-  "include": ["src/runtime", "src/content", "src/game", "src/ui", "tests"]
+  "include": ["src/runtime", "src/content", "src/game", "src/ai", "src/advisor", "src/ui", "tests"]
 }

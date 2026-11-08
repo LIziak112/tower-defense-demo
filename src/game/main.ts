@@ -1,15 +1,19 @@
 // D1 presenter: fixed 30 tick/s accumulator loop; rendering only reads state, all rules in runtime.
 // Hikos 嵌入（hikos.ts / skins.ts）：URL 参数 skin/accent/bg/ink/theme/lang 决定配色与文案，postMessage v1 与宿主握手（td:ready / td:state / td:exit）。
+// 军师（src/advisor/，任务 fb4d93bc）：?advisor=local|host|<url> 选通道；会话每 tick 前后各一个钩子；采纳只产出 build 命令走同一条校验；卡片见 advisorCard.ts。
 import { createBattle, step, checksum, TICKS_PER_SECOND, CELL } from '../runtime/index';
 import type { BattleState, Command, GameEvent } from '../runtime/index';
 import { DEFAULT_PACK } from '../content/default';
 import { PALETTES, type Palette } from './palettes';
 import { MockProvider } from '../ai/mock';
-import { runPipeline, type Summary } from '../ai/pipeline';
+import { runPipeline, runPipelineAsync, type Summary } from '../ai/pipeline';
+import { LlmContentProvider } from '../ai/llm';
 import type { ContentPack } from '../runtime/index';
 import { expandPath } from '../content/validate';
 import { createHostBridge, type GameState, type HostContext } from './hikos';
 import { paletteForContext } from './skins';
+import { AdvisorSession, HostChannel, selectChannel, type AdvisorView } from '../advisor/index';
+import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
@@ -24,7 +28,8 @@ const provider = new MockProvider();
 const legacyPalette = [params.get('palette'), params.get('theme')].find((k) => k && k in PALETTES) ?? null;
 // ?debug 时把解析后的 query 与收到的 hikos:* 消息挂在 window.__q / window.__msgs：宿主侧 tools/addons/test-arcade.cjs 对真游戏跑协议断言的读点
 const hostLog: Record<string, unknown>[] = [];
-const bridge = createHostBridge(window, { onContext: applyContext, onVisibility: setHostVisible, onAny: (m) => { if (DEBUG) hostLog.push(m); } });
+const advisorReplyCbs: ((m: Record<string, unknown>) => void)[] = [];
+const bridge = createHostBridge(window, { onContext: applyContext, onVisibility: setHostVisible, onAdvisorReply: (m) => { for (const cb of advisorReplyCbs) cb(m); }, onAny: (m) => { if (DEBUG) hostLog.push(m); } });
 if (DEBUG) { (window as any).__q = Object.fromEntries(params); (window as any).__msgs = hostLog; }
 const hikosMode = bridge.embedded || params.has('skin') || params.has('accent');
 let currentTheme = legacyPalette ?? (hikosMode ? 'hikos' : 'default');
@@ -33,10 +38,19 @@ let lang = bridge.context.lang;
 
 // 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切；军师议事（D2 大厅）暂只有中文
 const STR = {
-  zh: { base: '基地', gold: '金币', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停' },
-  en: { base: 'Base', gold: 'Gold', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused' },
+  zh: { base: '基地', gold: '金币', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…' },
+  en: { base: 'Base', gold: 'Gold', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…' },
 } as const;
 const t = (k: keyof typeof STR.zh) => STR[lang][k];
+
+// ---- 军师通道与会话：嵌入缺省走宿主代理，独立缺省走本地模板，?advisor= 可切；凭据与端点永远不在这里
+let hostChannel: HostChannel | null = null;
+const advisorSel = selectChannel({
+  search: location.search, embedded: bridge.embedded,
+  makeHost: () => (hostChannel = new HostChannel((m) => bridge.send(m), (cb) => advisorReplyCbs.push(cb))),
+});
+const session = new AdvisorSession({ channel: advisorSel.channel, lang, tactical: !params.has('notactical'), onChange: () => scheduleCard() });
+const llmLevelProvider = advisorSel.channel ? new LlmContentProvider(advisorSel.channel, { lang }) : null;
 
 let state: BattleState = createBattle(pack, SEED);
 let queue: Command[] = [];
@@ -64,8 +78,25 @@ hud.id = 'hud';
 const dbg = document.createElement('pre');
 dbg.id = 'debug';
 dbg.style.display = DEBUG ? 'block' : 'none';
-root.append(hud, canvas, dbg);
+const advisorBox = document.createElement('div');
+advisorBox.id = 'advisor';
+root.append(hud, canvas, advisorBox, dbg);
 const ctx = canvas.getContext('2d')!;
+
+// ---- 军师卡片：会话一变就重画（合并到下一帧）；点击只回灌命令 / 开关
+let cardRaf = 0;
+let cardView: AdvisorView = session.view();
+function scheduleCard() { cancelAnimationFrame(cardRaf); cardRaf = requestAnimationFrame(renderCard); }
+function renderCard() {
+  cardView = session.view();
+  advisorBox.style.display = inLobby ? 'none' : 'block';
+  renderAdvisorCard(advisorBox, cardView, pack, lang, state.phase, {
+    adopt: (id) => { queue.push(...session.adopt(id)); },
+    takeGambit: () => { const c = session.takeGambit(); if (c) queue.push(c); },
+    setAutopilot: (on) => session.setAutopilot(on),
+  });
+  fit();
+}
 
 function applyPalette() {
   const r = document.documentElement.style;
@@ -80,9 +111,13 @@ function applyPalette() {
 }
 function applyContext(c: HostContext) {
   lang = c.lang;
+  session.lang = c.lang;
+  // 宿主 context 一到就定军师可用性：没配（enabled:false）或老宿主（没有 advisor 字段）→ 不白等截止，秒切本地；排队中的请求随之放行 / 作废
+  hostChannel?.setAvailable(c.advisor?.enabled === true);
   if (!legacyPalette) { theme = paletteForContext(c); currentTheme = 'hikos'; }
   applyPalette();
   renderHud();
+  scheduleCard();
 }
 function setHostVisible(visible: boolean) {
   hostHidden = !visible;
@@ -127,6 +162,13 @@ function renderHud() {
     else queue.push({ type: 'start_wave' });
   };
   hud.append(w);
+  if (s.phase === 'won' || s.phase === 'lost') {
+    // 复仇一局（玩法增强 ③）：把这局的战报交给关卡设计军师，出一张针对你弱点的关
+    const rv = document.createElement('button');
+    rv.id = 'td-revenge'; rv.textContent = revenging ? t('revenging') : t('revenge'); rv.disabled = revenging;
+    rv.onclick = () => { void revenge(); };
+    hud.append(rv);
+  }
 
   if (!hikosMode) {
     // 独立页才有主题下拉；嵌在 Hikos 里配色由宿主皮肤决定
@@ -166,7 +208,7 @@ function fit() {
   cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
     const availW = Math.max(200, document.documentElement.clientWidth - 20);
-    const availH = Math.max(200, document.documentElement.clientHeight - hud.offsetHeight - 30);
+    const availH = Math.max(200, document.documentElement.clientHeight - hud.offsetHeight - advisorBox.offsetHeight - 38);
     const scale = Math.min(availW / canvas.width, availH / canvas.height, 2);
     canvas.style.width = `${Math.floor(canvas.width * scale)}px`;
     canvas.style.height = `${Math.floor(canvas.height * scale)}px`;
@@ -180,6 +222,7 @@ canvas.addEventListener('click', (ev) => {
   const x = Math.floor(((ev.clientX - r.left) / r.width) * pack.map.width);
   const y = Math.floor(((ev.clientY - r.top) / r.height) * pack.map.height);
   queue.push({ type: 'build', tower_id: selected, x, y });
+  session.notePlayerBuild();
 });
 
 // 触控：只注册一次；touchend 里 preventDefault 抑制浏览器随后合成的 click，避免一次点触建两座塔
@@ -191,6 +234,7 @@ canvas.addEventListener('touchend', (e) => {
   const x = Math.floor(((tp.clientX - r.left) / r.width) * pack.map.width);
   const y = Math.floor(((tp.clientY - r.top) / r.height) * pack.map.height);
   queue.push({ type: 'build', tower_id: selected, x, y });
+  session.notePlayerBuild();
 }, { passive: false });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'F1' || e.key === '`') { e.preventDefault(); dbg.style.display = dbg.style.display === 'none' ? 'block' : 'none'; }
@@ -225,11 +269,13 @@ function onEvents(evs: GameEvent[]) {
 }
 
 function tickOnce() {
+  queue.push(...session.beforeTick());   // 托管采纳等异步产生的命令，与玩家命令同队同校验
   const cmds = queue; queue = [];
   if (cmds.length) recorded.push({ tick: state.tick, cmds });
   const r = step(state, cmds);
   state = r.state;
   onEvents(r.events);
+  session.afterTick(state, r.events);
   const dt = 1 / TICKS_PER_SECOND;
   for (let i = particles.length - 1; i >= 0; i--) {
     particles[i].x += particles[i].vx * dt;
@@ -239,6 +285,7 @@ function tickOnce() {
   }
 
   if (r.events.length || cmds.length) renderHud();
+  if (r.events.some((e) => e.type === 'wave_started' || e.type === 'wave_cleared' || e.type === 'battle_ended' || e.type === 'gambit_accepted')) scheduleCard();
 }
 
 const toPx = (m: number) => (m / CELL) * PX;
@@ -310,6 +357,8 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
+  if (!inLobby && (s.phase === 'build' || s.phase === 'wave')) drawAdvisorOverlay(ctx, cardView, pack, PX, theme.accent ?? '#ffd36a');
+
   if (s.phase === 'won' || s.phase === 'lost') {
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = theme.paper ?? theme.text; ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center';
@@ -340,16 +389,19 @@ const lobby = document.createElement('div');
 lobby.id = 'lobby';
 root.append(lobby);
 function esc(tx: string) { return tx.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!)); }
+let designing = false;   // 关卡设计军师（LLM）出活中：按钮置灰，防连点
 function showLobby(sum?: Summary, text = '') {
-  inLobby = true; lobby.style.display = 'block';
-  lobby.innerHTML = `<div class="card"><h3>军师议事 <small>${esc(provider.name)}</small></h3>
+  inLobby = true; lobby.style.display = 'block'; advisorBox.style.display = 'none';
+  const who = sum?.provider ?? (llmLevelProvider ? `${llmLevelProvider.name}（超时退 ${provider.name}）` : provider.name);
+  lobby.innerHTML = `<div class="card"><h3>军师议事 <small>${esc(who)}</small></h3>
   <textarea id="desc" rows="2" placeholder="描述你想要的战局，例如：长坂坡雨夜，人海战术">${esc(text)}</textarea>
-  <div class="row"><button id="gen">让军师设计</button></div>
+  <div class="row"><button id="gen"${designing ? ' disabled' : ''}>${designing ? '军师出题中…' : '让军师设计'}</button></div>
   <div id="summary"></div></div>`;
   const out = lobby.querySelector('#summary')!;
   if (sum) {
     const dr = sum.dryrun.map((d) => `${d.bot === 'greedy' ? '贪心放塔' : '不放塔'}：${d.result === 'won' ? '胜' : d.result === 'lost' ? '负' : '超时'}（基地剩 ${d.base_hp}，漏 ${d.leaks}）`).join('；');
     out.innerHTML = `<p class="echo">${esc(sum.echo)}</p>
+    ${sum.note ? `<p class="warn">${esc(sum.note)}</p>` : ''}
     <p>塔：${esc(sum.towers.join('、'))}<br>怪：${esc(sum.enemies.join('、'))}<br>波次：${sum.waves.map((w, i) => `${i + 1}(${w.total})`).join(' ')}</p>
     <p class="dry">预演：${esc(dr)}</p>
     ${sum.warnings.map((w) => `<p class="warn">⚠ ${esc(w.message)}</p>`).join('')}
@@ -360,9 +412,23 @@ function showLobby(sum?: Summary, text = '') {
   }
   lobby.querySelector('#gen')!.addEventListener('click', () => {
     const tx = (lobby.querySelector('#desc') as HTMLTextAreaElement).value.trim() || '长坂坡雨夜';
-    showLobby(runPipeline(provider, tx), tx);
+    void design(tx);
   });
   reportState();
+}
+/** 关卡设计：有通道就走真 LLM（失败整条退本地模板军师并在卡上说明），没有就同步走 Mock */
+async function design(tx: string) {
+  if (designing) return;
+  if (!llmLevelProvider) { showLobby(runPipeline(provider, tx), tx); return; }
+  designing = true; showLobby(undefined, tx);
+  try { showLobby(await runPipelineAsync(llmLevelProvider, tx, 3, provider), tx); }
+  finally { designing = false; }
+}
+let revenging = false;
+async function revenge() {
+  if (revenging) return;
+  revenging = true; renderHud();
+  try { await design(session.debrief(state)); } finally { revenging = false; }
 }
 function startWith(p: ContentPack) {
   pack = p;
@@ -371,9 +437,21 @@ function startWith(p: ContentPack) {
   selected = pack.towers[0].id;
   state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; queue = [];
   inLobby = false; lobby.style.display = 'none'; renderHud();
+  session.reset(state);
+  scheduleCard();
 }
-(window as any).__lobby = { gen: (tx: string) => showLobby(runPipeline(provider, tx), tx) };
-if (inLobby) showLobby(); else lobby.style.display = 'none';
+(window as any).__lobby = { gen: (tx: string) => { void design(tx); } };
+if (inLobby) showLobby(); else { lobby.style.display = 'none'; session.reset(state); }
 renderHud();
 requestAnimationFrame(frame);
 (window as any).__td = { get state() { return state; }, checksum: () => checksum(state), recorded, get host() { return { embedded: bridge.embedded, origin: bridge.origin, context: bridge.context, hidden: hostHidden, palette: currentTheme }; } };
+// 军师读点（E2E / 宿主侧 test-arcade 用）：只读视图 + 与卡片按钮等价的三个动作；没有任何注入回包的后门（回包只能从通道来）
+(window as any).__advisor = {
+  mode: advisorSel.mode, reason: advisorSel.reason,
+  view: () => session.view(),
+  adopt: (id: string) => { const c = session.adopt(id); queue.push(...c); return c.length; },
+  takeGambit: () => { const c = session.takeGambit(); if (c) queue.push(c); return !!c; },
+  setAutopilot: (on: boolean) => session.setAutopilot(on),
+  snapshot: () => session.snapshotNow(),
+  debrief: () => session.debrief(state),
+};

@@ -15,6 +15,37 @@ export interface Summary {
   towers: string[]; enemies: string[]; waves: { id: string; total: number }[];
   warnings: VWarning[]; errors: VError[]; dryrun: DryRunResult[];
   pack: ContentPack; raw: RawPack;
+  /** 异步管线的备注（如「LLM 超时，改用本地模板军师」）；同步管线没有 */
+  note?: string;
+}
+
+/** 异步 provider（真 LLM 走通道）：与 ContentProvider 同形，只是 generateContent 可以返回 Promise */
+export interface AsyncContentProvider { readonly name: string; readonly isMock: boolean; generateContent(input: { text: string; previous?: RawPack; errors?: VError[] }): RawPack | Promise<RawPack> }
+
+/**
+ * 与 runPipeline 同一条链（generate → validate → ≤3 轮带错重试 → compile → dry-run），只是等得起 Promise。
+ * provider 抛错（超时 / 断网 / 非 JSON）→ 整条换 fallbackProvider 重跑并在 note 里说明；没有 fallbackProvider 就抛出。
+ */
+export async function runPipelineAsync(provider: AsyncContentProvider, text: string, maxRounds = 3, fallbackProvider?: ContentProvider): Promise<Summary> {
+  try {
+    let raw: unknown = await provider.generateContent({ text });
+    let errors: VError[] = []; let attempts = 0;
+    for (attempts = 1; attempts <= maxRounds; attempts++) {
+      const v = validatePack(raw);
+      if (v.ok) return build(provider, text, v.pack, attempts, false, []);
+      errors = v.errors;
+      if (attempts < maxRounds) raw = await provider.generateContent({ text, previous: raw as RawPack, errors });
+    }
+    const fb = validatePack(A);
+    if (!fb.ok) throw new Error('默认关卡自身未通过校验');
+    return build(provider, text, fb.pack, maxRounds, true, errors);
+  } catch (e) {
+    if (!fallbackProvider) throw e;
+    const code = e instanceof Error ? e.message : String(e);
+    const sum = runPipeline(fallbackProvider, text, maxRounds);
+    sum.note = `${provider.name} 没能出活（${code}），改用${fallbackProvider.name}。`;
+    return sum;
+  }
 }
 
 export function runPipeline(provider: ContentProvider, text: string, maxRounds = 3): Summary {
@@ -40,7 +71,7 @@ export function loadPackOrFallback(input: unknown, provider: ContentProvider): S
   return build(provider, '（导入的内容包）', fb.pack, 1, true, v.errors);
 }
 
-function build(provider: ContentProvider, text: string, raw: RawPack, attempts: number, fallback: boolean, errors: VError[]): Summary {
+function build(provider: { name: string; isMock: boolean }, text: string, raw: RawPack, attempts: number, fallback: boolean, errors: VError[]): Summary {
   const pack = compilePack(raw);
   const bw = balanceWarnings(pack);
   const m = parseKeywords(text);

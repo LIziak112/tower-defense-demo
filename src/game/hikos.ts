@@ -2,6 +2,9 @@
 // 游戏被宿主用 sandbox="allow-scripts" 的 iframe 嵌在 /arcade/tower-defense/：不透明源，没有 localStorage / cookie，所有状态只放内存。
 // 宿主 → 游戏：首帧前走 URL query（v skin accent bg ink theme lang），运行中走 hikos:context / hikos:visibility / hikos:size。
 // 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h}。消息里没有任何身份信息，只有展示类字段。
+// 军师（任务 fb4d93bc，06 规格 §3）：游戏 → 宿主 td:advisor:request {reqId, kind, deadlineMs, stateVersion, snapshot, llm}；
+//   宿主 → 游戏 hikos:advisor:reply {reqId, ok, payload | error, provider, latencyMs}；hikos:context 可多带 advisor {enabled, provider}（只增不改）。
+//   宿主拿自己的凭据与路由去调模型；游戏只送极简决策快照与提示词，不碰端点与密钥。
 
 export const PROTOCOL = 1;
 
@@ -22,10 +25,12 @@ export interface HostContext {
   theme: HostTheme;
   lang: HostLang;
   reducedMotion: boolean;
+  /** 宿主能否代理军师请求（只有 hikos:context 带）；null = 宿主没说（按能代理处理，等它回） */
+  advisor: { enabled: boolean; provider: string | null } | null;
 }
 
 export const DEFAULT_CONTEXT: HostContext = {
-  v: PROTOCOL, skin: null, name: null, accent: null, bg: null, ink: null, theme: 'day', lang: 'zh', reducedMotion: false,
+  v: PROTOCOL, skin: null, name: null, accent: null, bg: null, ink: null, theme: 'day', lang: 'zh', reducedMotion: false, advisor: null,
 };
 
 /** 宿主只认 6 位 hex（去 #）；这里顺带接受带 # 的写法，其它一律 null（接入说明 §1.5「否则用缺省」）。 */
@@ -62,7 +67,15 @@ export function contextFromQuery(search: string): HostContext {
     theme,
     lang: pick(q.get('lang'), LANGS, DEFAULT_CONTEXT.lang),
     reducedMotion: false,
+    advisor: null,
   };
+}
+
+function parseAdvisor(v: unknown, prev: HostContext['advisor']): HostContext['advisor'] {
+  if (v === undefined) return prev;
+  if (!v || typeof v !== 'object') return null;
+  const a = v as Record<string, unknown>;
+  return { enabled: a.enabled === true, provider: typeof a.provider === 'string' && a.provider.length <= 64 ? a.provider : null };
 }
 
 /** 合并一条 hikos:context（§1.6）：字段只增不改，缺的字段保留上一次的值。 */
@@ -82,6 +95,7 @@ export function contextFromMessage(msg: unknown, prev: HostContext): HostContext
     theme: pick(m.theme, THEMES, prev.theme),
     lang: pick(m.lang, LANGS, prev.lang),
     reducedMotion: typeof m.reducedMotion === 'boolean' ? m.reducedMotion : prev.reducedMotion,
+    advisor: parseAdvisor(m.advisor, prev.advisor),
   };
 }
 
@@ -102,6 +116,8 @@ export interface HostMessageHandlers {
   onContext?: (ctx: HostContext) => void;
   onVisibility?: (visible: boolean) => void;
   onSize?: (w: number, h: number) => void;
+  /** 宿主代发军师回来的回包（hikos:advisor:reply）；配对与校验在 src/advisor/session.ts */
+  onAdvisorReply?: (msg: Record<string, unknown>) => void;
   /** 每条通过源校验的 hikos:* 消息（调试 / 宿主侧 test-arcade 读点用） */
   onAny?: (msg: Record<string, unknown>) => void;
 }
@@ -115,6 +131,8 @@ export interface HostBridge {
   state(s: GameState): void;
   exit(): void;
   resize(w: number, h: number): void;
+  /** 军师请求（td:advisor:request）；message.type 必须以 td: 开头，别的不发 */
+  send(message: Record<string, unknown>): void;
   dispose(): void;
 }
 
@@ -145,6 +163,8 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
     } else if (m.type === 'hikos:size') {
       const { w, h } = m as { w?: unknown; h?: unknown };
       if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) handlers.onSize?.(w, h);
+    } else if (m.type === 'hikos:advisor:reply') {
+      handlers.onAdvisorReply?.(m as Record<string, unknown>);
     }
   };
   if (embedded) win.addEventListener('message', onMessage);
@@ -156,6 +176,7 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
     state(s) { if (!STATES.includes(s) || s === lastState) return; lastState = s; if (readySent) post({ type: 'td:state', state: s }); },
     exit() { post({ type: 'td:exit' }); },
     resize(w, h) { post({ type: 'td:resize', w: Math.round(w), h: Math.round(h) }); },
+    send(message) { if (typeof message.type === 'string' && message.type.startsWith('td:')) post(message); },
     dispose() { if (embedded) win.removeEventListener('message', onMessage); },
   };
   return bridge;
