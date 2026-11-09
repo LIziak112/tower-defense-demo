@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
+import { createSpatialProjector, parseSpatialMap } from '../../src/game/spatialMap';
+import { DEFAULT_PACK } from '../../src/content/default';
+import { slotCell } from '../../src/advisor/snapshot';
 
 describe('hikos URL query（接入说明 §1.5）', () => {
   it('宿主拼的完整 query 全部解析', () => {
@@ -133,5 +136,69 @@ describe('出站顺序（§1.6：td:ready 是第一条）', () => {
     b.state('playing'); b.ready(); b.exit();
     expect(b.embedded).toBe(false);
     expect(sent).toEqual([]);
+  });
+});
+
+describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等轴测正逆映射）', () => {
+  it('hikos:context 与 hikos:map 解析空间场景地标、节点与相机姿态', () => {
+    const base = contextFromQuery('?v=1&skin=metropolis-riverside-3d&insitu=1');
+    expect(base.insitu).toBe(true);
+    const merged = contextFromMessage({
+      type: 'hikos:context',
+      v: 1,
+      insitu: true,
+      map: {
+        skin: 'metropolis-riverside-3d',
+        layout: 'river-grid',
+        w: 1440,
+        h: 856,
+        azimuth: -0.38,
+        pitch: 0.78,
+        zoom: 1.2,
+        center: { x: 740, y: 420 },
+        home: { key: 'home', kind: 'landmark', label: '母星', x: 740, y: 420, wx: 0, wz: 0 },
+        landmarks: [{ key: 'home', kind: 'landmark', label: '母星', x: 740, y: 420, wx: 0, wz: 0 }],
+        nodes: [{ key: 'channel:mother:hall', kind: 'entity', label: '# 大厅', group: '公共区', color: '#356d73', x: 640, y: 360, wx: -14, wz: -8 }],
+      },
+    }, base);
+    expect(merged.insitu).toBe(true);
+    expect(merged.map).toBeTruthy();
+    expect(merged.map?.layout).toBe('river-grid');
+    expect(merged.map?.home?.label).toBe('母星');
+    expect(merged.map?.nodes).toHaveLength(1);
+  });
+
+  it('cellToScreen 与 screenToCell 在任意相机 azimuth/pitch/zoom 下保持格坐标精确双射，且提取沿途建塔点位', () => {
+    const hostMap = parseSpatialMap({
+      skin: 'union-atlas-3d',
+      layout: 'concentric-town',
+      w: 1280,
+      h: 800,
+      azimuth: -0.42,
+      pitch: 0.82,
+      zoom: 1.15,
+      center: { x: 660, y: 390 },
+      home: { key: 'home', kind: 'landmark', label: '母星', x: 660, y: 390 },
+    });
+    const proj = createSpatialProjector(DEFAULT_PACK, 1280, 800, hostMap);
+    expect(proj.tacticalSlots.length).toBeGreaterThan(10);
+    expect(proj.tacticalSlots[0].adjacentToPath).toBe(true);
+
+    for (let cy = 0; cy < DEFAULT_PACK.map.height; cy++) {
+      for (let cx = 0; cx < DEFAULT_PACK.map.width; cx++) {
+        const pt = proj.cellToScreen(cx + 0.5, cy + 0.5);
+        const back = proj.screenToCell(pt.x, pt.y);
+        expect(back.cx).toBe(cx);
+        expect(back.cy).toBe(cy);
+        expect(back.inBounds).toBe(true);
+      }
+    }
+
+    for (const ts of proj.tacticalSlots.slice(0, 12)) {
+      const cell = slotCell(DEFAULT_PACK, ts.slot);
+      expect(cell).toEqual({ x: ts.x, y: ts.y });
+      const back = proj.screenToCell(ts.sx, ts.sy);
+      expect(back.slot).toBe(ts.slot);
+    }
   });
 });
