@@ -256,3 +256,104 @@ test('大厅 #25801：四款皮肤原生道路80%-100%/起终点原生建筑/车
   expect(lossCp.lastSettlement).toMatchObject({ outcome: 'lost', deltaCp: -10, appliedCp: -10, balanceCp: 1000, status: 'settled' });
   await expect(game.locator('#td-cp-settlement')).toContainText('结算 -10 CP · 账户 1000 CP');
 });
+
+test('大厅 #26153：四款皮肤文化设定命名、专属攻防打击动效+减弱动态开关、战前参谋敕令三选一+兵种克制+路线分流+危机词缀', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 856 });
+  const hostPageHtml = `<!DOCTYPE html><html><body style="margin:0">
+<div id="stage" style="width:1440px;height:856px"><iframe id="game" sandbox="allow-scripts" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0"></iframe></div>
+<script>
+  const frame = document.getElementById('game');
+  window.__send = (m) => frame.contentWindow.postMessage(m, '*');
+  frame.src = './?v=1&skin=union-atlas-3d&accent=a72e25&bg=f2ebdd&ink=393e38&theme=day&lang=zh&insitu=1&debug=1';
+</script></body></html>`;
+
+  await page.route('**/__cultural-vfx-host.html', (route) => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: hostPageHtml }));
+  await page.goto('/__cultural-vfx-host.html');
+  const el = await page.waitForSelector('#game');
+  const game = (await el.contentFrame())!;
+  await game.waitForSelector('#board', { state: 'visible' });
+
+  const skinExpectations = [
+    {
+      skin: 'union-atlas-3d', accent: 'a72e25', bg: 'f2ebdd', ink: '393e38', theme: 'day',
+      council: '星院参谋庭', advisor: '星院首席参谋', tower0: '脉冲棱镜塔', enemy0: '相位护盾巡逻机', style: 'prism_beam',
+    },
+    {
+      skin: 'metropolis-riverside-3d', accent: '356d73', bg: 'e8ede7', ink: '354e52', theme: 'day',
+      council: '市政防务调度中心', advisor: '市政智控调度总监', tower0: '电磁拦阻桩', enemy0: '磁盾巡检机器人', style: 'emp_arc',
+    },
+    {
+      skin: 'gothic-cathedral-3d', accent: 'e4c596', bg: '182333', ink: 'e6e1da', theme: 'night',
+      council: '圣堂守夜审判庭', advisor: '守夜大审判官', tower0: '圣光钟楼', enemy0: '黯影障壁食尸鬼', style: 'holy_lance',
+    },
+    {
+      skin: 'harbor-district-3d', accent: '256e7c', bg: 'e0e9e7', ink: '254452', theme: 'day',
+      council: '港务海事防卫局', advisor: '海事防卫总领航员', tower0: '防波堤速射炮', enemy0: '气垫护盾驳船', style: 'naval_shell',
+    },
+  ];
+
+  for (const exp of skinExpectations) {
+    await page.evaluate((s) => (window as any).__send({
+      type: 'hikos:context', v: 1, skin: s.skin, accent: s.accent, bg: s.bg, ink: s.ink, theme: s.theme, lang: 'zh',
+      reducedMotion: false, insitu: true,
+      map: { skin: s.skin, layout: 'river-grid', w: 1440, h: 856, azimuth: -0.38, pitch: 0.78, zoom: 1.0 },
+    }), exp);
+
+    await expect(game.locator('#lobby-council-title')).toHaveText(exp.council);
+    await expect(game.locator('#hud')).toContainText(exp.tower0);
+    await expect(game.locator('#hud')).toContainText(exp.enemy0);
+
+    const snap = await game.evaluate(() => ({
+      cultural: (window as any).__td.cultural,
+      vfx: (window as any).__td.vfx,
+      tactics: (window as any).__td.tactics,
+      splitCount: (window as any).__td.spatial?.roadPlan?.splitBranchSegments?.length ?? 0,
+      bodyText: document.body.innerText,
+    }));
+    expect(snap.cultural.councilTitle).toBe(exp.council);
+    expect(snap.cultural.advisorRole).toBe(exp.advisor);
+    expect(snap.cultural.towers[0].name).toBe(exp.tower0);
+    expect(snap.cultural.enemies[0].name).toBe(exp.enemy0);
+    expect(snap.vfx.projectileStyle).toBe(exp.style);
+    expect(snap.tactics.edicts).toHaveLength(3);
+    expect(snap.tactics.affixes).toHaveLength(3);
+    expect(snap.splitCount).toBeGreaterThanOrEqual(2);
+    expect(snap.bodyText).not.toMatch(/弩车|投石车|步卒|轻骑/);
+  }
+
+  // 验证战前参谋敕令三选一与危机挑战词缀交互
+  await game.click('#lobby-edicts button[data-edict="bounty_lure"]');
+  await game.click('#lobby-affixes button[data-affix="emp_fog"]');
+  await game.click('#lobby-affixes button[data-affix="vanguard_surge"]');
+  await expect(game.locator('#td-crisis-rating')).toContainText('R2');
+  const tacticsAfter = await game.evaluate(() => ({
+    tactics: (window as any).__td.tactics,
+    gold: (window as any).__td.state.gold,
+  }));
+  expect(tacticsAfter.tactics.selectedEdictId).toBe('bounty_lure');
+  expect(tacticsAfter.tactics.activeAffixIds).toEqual(['emp_fog', 'vanguard_surge']);
+  expect(tacticsAfter.gold).toBe(155); // 120 + 35 CP 诱敌补贴
+
+  // 验证攻防打击动效（标准模式 vs 减弱动态模式）
+  const vfxFull = await game.evaluate(() => {
+    (window as any).__td.setReducedMotion(false);
+    return (window as any).__td.triggerDemoCombatVfx();
+  });
+  expect(vfxFull.reducedMotion).toBe(false);
+  expect(vfxFull.activeShots).toBeGreaterThan(0);
+  expect(vfxFull.activePopups).toBeGreaterThan(0);
+  expect(vfxFull.activeRipples).toBeGreaterThan(0);
+  expect(vfxFull.screenShaking).toBe(true);
+  expect(vfxFull.stats.shotsFired).toBeGreaterThan(0);
+  expect(vfxFull.stats.screenShakes).toBeGreaterThan(0);
+
+  // 切换减弱动态开关（#td-reduced-motion）：屏震与 Hit-stop 立即关闭
+  await game.click('#td-reduced-motion');
+  await expect(game.locator('#td-reduced-motion')).toHaveAttribute('data-reduced-motion', 'true');
+  const shakesBeforeReduced = vfxFull.stats.screenShakes;
+  const vfxReduced = await game.evaluate(() => (window as any).__td.triggerDemoCombatVfx());
+  expect(vfxReduced.reducedMotion).toBe(true);
+  expect(vfxReduced.screenShaking).toBe(false);
+  expect(vfxReduced.hitStopping).toBe(false);
+  expect(vfxReduced.stats.screenShakes).toBe(shakesBeforeReduced);
+});

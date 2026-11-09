@@ -103,6 +103,80 @@
       border-color: color-mix(in srgb, var(--td-hair) 80%, transparent);
       opacity: .85;
     }
+    #hud button.motion-toggle {
+      padding: 4px 8px;
+      font-size: 11.5px;
+      background: color-mix(in srgb, var(--td-bg) 42%, var(--td-paper));
+    }
+    #hud button.motion-toggle.is-reduced {
+      border-color: var(--td-accent);
+      color: var(--td-accent);
+    }
+    .lobby-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--td-accent);
+      margin: 7px 0 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .edict-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .edict-card {
+      padding: 4px 7px;
+      border-radius: 4px;
+      border: 1px solid color-mix(in srgb, var(--td-hair) 75%, transparent);
+      background: color-mix(in srgb, var(--td-bg) 35%, var(--td-paper));
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1.32;
+      text-align: left;
+      color: var(--td-ink);
+    }
+    .edict-card.active {
+      border-color: var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 16%, var(--td-paper));
+    }
+    .edict-card b {
+      display: inline-block;
+      margin-right: 5px;
+      color: var(--td-accent);
+    }
+    .affix-row {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .affix-chip {
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px dashed color-mix(in srgb, var(--td-hair) 85%, transparent);
+      background: color-mix(in srgb, var(--td-bg) 40%, transparent);
+      color: var(--td-ink);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .affix-chip.active {
+      border-style: solid;
+      border-color: var(--td-danger);
+      color: var(--td-danger);
+      background: color-mix(in srgb, var(--td-danger) 14%, var(--td-paper));
+      font-weight: 700;
+    }
+    .counter-matrix {
+      margin-top: 5px;
+      padding: 4px 7px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--td-bg) 42%, var(--td-paper));
+      border: 1px solid color-mix(in srgb, var(--td-hair) 60%, transparent);
+      font-size: 10.5px;
+      line-height: 1.35;
+      opacity: .92;
+    }
     .toast {
       color: var(--td-danger);
       font-weight: 600;
