@@ -63,7 +63,7 @@ interface Inflight { reqId: string; kind: Exclude<AdviceKind, 'level'>; stateVer
 const STR = {
   zh: { thinking: '军师思考中…', late: '军师迟到，这条不等了。', timeoutLocal: '军师迟到，先用本地建议。', offline: '军师没回音，先用本地建议。', badShape: '军师的话不成句，先用本地建议。', stale: '军师的建议过期了，丢弃。', noTransport: '未接军师，用本地建议。', superseded: '战局已变，上一条建议作废。',
     betYou: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只——你赢了军师！`, betAdvisor: (p: number) => `军师押漏 ${p} 只，分毫不差。`, betNone: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只，比军师想的还糟。`,
-    outcomeOk: (t: string, s: number) => `已按军师建议在槽 ${s} 落下${t}。`, outcomeBad: (s: number, m: string) => `槽 ${s} 没落成：${m}` },
+    outcomeOk: (t: string, s: number) => `已按军师献策在第 ${s} 号阵位布设「${t}」。`, outcomeBad: (s: number, m: string) => `第 ${s} 号阵位未能布设：${m}` },
   en: { thinking: 'Advisor thinking…', late: 'Advisor is late; skipping this one.', timeoutLocal: 'Advisor is late; using local advice.', offline: 'No reply from advisor; using local advice.', badShape: 'Advisor reply was malformed; using local advice.', stale: 'Advisor reply is stale; dropped.', noTransport: 'No advisor connected; local advice.', superseded: 'The battle moved on; last advice withdrawn.',
     betYou: (p: number, a: number) => `Advisor bet ${p} leaks, you leaked ${a}—you beat the advisor!`, betAdvisor: (p: number) => `Advisor bet ${p} leaks. Called it.`, betNone: (p: number, a: number) => `Advisor bet ${p} leaks, actual ${a}: worse than feared.`,
     outcomeOk: (t: string, s: number) => `Placed ${t} at slot ${s} as advised.`, outcomeBad: (s: number, m: string) => `Slot ${s} failed: ${m}` },
@@ -208,6 +208,7 @@ export class AdvisorSession {
     const activeAgent = this.agent ?? this.channel?.agent ?? null;
     const req: AdvisorRequest = {
       v: 1, reqId, kind, deadlineMs, stateVersion: snapshot.stateVersion, snapshot,
+      stream: true,
       ...(activeAgent ? { agent: activeAgent } : {}),
       llm: { ...advicePrompt(kind, snapshot, this.lang, activeAgent), json: true },
     };

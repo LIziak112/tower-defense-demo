@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
 import { createSpatialProjector, parseSpatialMap } from '../../src/game/spatialMap';
+import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice, sanitizeLlmPack } from '../../src/game/chatFormat';
+import { validatePack } from '../../src/content/validate';
+import { parseAdvice } from '../../src/advisor/types';
 import { DEFAULT_PACK } from '../../src/content/default';
 import { slotCell } from '../../src/advisor/snapshot';
 
@@ -200,5 +203,62 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
       const back = proj.screenToCell(ts.sx, ts.sy);
       expect(back.slot).toBe(ts.slot);
     }
+  });
+
+  it('大厅 #25648：gothic-cathedral-3d (-2.55 rad) 等全皮肤视角自动折叠对齐，军师输出去技术词、屏蔽原始 JSON 并支持 LLM 回包自愈', () => {
+    // 1. gothic-cathedral-3d 的 azimuth = -2.55 折叠到正前等轴测舒适区间 [-0.68, 0.68] 且保持双射
+    const gothicMap = parseSpatialMap({
+      skin: 'gothic-cathedral-3d',
+      layout: 'concentric-town',
+      w: 1210,
+      h: 834,
+      azimuth: -2.55,
+      pitch: 0.65,
+      zoom: 1.0,
+      center: { x: 605, y: 400 },
+    });
+    const gothicProj = createSpatialProjector(DEFAULT_PACK, 1210, 834, gothicMap);
+    expect(gothicProj.azimuth).toBeGreaterThanOrEqual(-0.68);
+    expect(gothicProj.azimuth).toBeLessThanOrEqual(0.68);
+    const p0 = gothicProj.cellToScreen(3.5, 4.5);
+    expect(gothicProj.screenToCell(p0.x, p0.y)).toMatchObject({ cx: 3, cy: 4, inBounds: true });
+
+    // 2. 剥离「流式」「Mock」「TIMEOUT」内部技术词，且从 JSON 增量流中提取自然语言而非暴露 JSON 编码
+    expect(cleanTechTerms('军师正在流式生成关卡（已流式输出 2217 字）· 本地模板军师（Mock，未接 LLM）· TIMEOUT')).not.toMatch(/流式|Mock|TIMEOUT/);
+    const rawJsonChunk = '{"meta":{"theme":"长坂坡雨夜","description":"雨夜突袭"},"enemies":[{"id":"enemy_heavy_01","display_name":"虎豹骑","speed_milli_per_tick":85}]}';
+    const speechHtml = extractNaturalAdvisorSpeech(rawJsonChunk, '军师正在流式生成关卡…');
+    expect(speechHtml).toContain('长坂坡雨夜');
+    expect(speechHtml).toContain('虎豹骑');
+    expect(speechHtml).not.toContain('speed_milli_per_tick');
+    expect(speechHtml).not.toContain('enemy_heavy_01');
+    expect(speechHtml).not.toContain('流式');
+
+    // 3. normalizeLlmAdvice 裁剪角色扮演超长文本，通过 parseAdvice
+    const norm = normalizeLlmAdvice({
+      basedOn: 0,
+      say: '老夫姜尚观此阵势，敌军先锋虽然来势汹汹，但只要在河岸折角布设双弩即可稳如泰山，主公勿忧，且看老夫一计定乾坤！',
+      options: [{ id: 'a', title: '稳守河岸折角大阵之策', why: '理由充分', moves: [{ slot: 1, tower: 'crossbow' }] }],
+    }, 15);
+    const parsed = parseAdvice(norm);
+    expect(parsed.ok).toBe(true);
+
+    // 4. sanitizeLlmPack 自动剔除压在路径上的 buildable_cells 并夹紧越界数值，一次通过 validatePack
+    const flawedPack = {
+      meta: { theme: '太公奇阵', description: '奇门遁甲' },
+      towers: [{ id: 'crossbow', display_name: '神臂弩', components: { Health: { max: 100 }, Attack: { damage: 999, range_milli: 9000, interval_ticks: 1 }, Targeting: { mode: 'first_on_path' }, Buildable: { cost: 5 }, Presentation: { asset_id: 'unknown_tower', palette_id: 'unknown_pal' } } }],
+      enemies: [{ id: 'cavalry', display_name: '虎豹骑', components: { Health: { max: 50000 }, Movement: { speed_milli_per_tick: 999 }, PathFollower: { base_damage: 2 }, Reward: { gold: 500 }, Presentation: { asset_id: 'unknown_enemy', palette_id: 'unknown_pal' } } }],
+      map: {
+        grid: { width: 12, height: 9 },
+        path: [[0, 1], [4, 1], [4, 3], [9, 3], [9, 6], [11, 6]],
+        buildable_cells: [[0, 1], [2, 1], [4, 2]], // 全部压在路径上！
+        base: { max_health: 20 },
+        starting_gold: 150,
+        presentation: { tileset_id: 'unknown_tile', palette_id: 'unknown_pal' },
+      },
+      waves: [{ id: 'w1', groups: [{ enemy_id: 'cavalry', count: 100, interval_ticks: 20 }] }],
+    };
+    const healed = sanitizeLlmPack(flawedPack);
+    const vr = validatePack(healed);
+    expect(vr.ok).toBe(true);
   });
 });

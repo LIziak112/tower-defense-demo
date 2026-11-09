@@ -17,8 +17,8 @@ export const LIMITS = {
   lineLen: 40,
   /** 快照里空槽只送 reach 最高的前 N 个（已占槽全送）；军师只能在送过去的槽里选，别的 id 一律 UNKNOWN_SLOT */
   slotsInSnapshot: 12,
-  nextWaveDeadlineMs: 6000,
-  tacticalDeadlineMs: 2500,
+  nextWaveDeadlineMs: 12000,
+  tacticalDeadlineMs: 6000,
   levelDeadlineMs: 20000,
   /** 2 s @ 30 tick/s：即时指令的 basedOn 比当前 tick 落后超过这个数就按过期丢弃（06 §4，取值随 30 tick/s 换算） */
   tacticalFreshTicks: 60,

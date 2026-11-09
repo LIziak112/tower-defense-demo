@@ -1,6 +1,7 @@
 // 三种通道：宿主代理（postMessage，嵌在 Hikos 里的正道）· HTTP 开发代理（独立打开 / 联调；只在非嵌入时允许）· 脚本通道（测试与故障注入）。
 // 通道只负责送到与收回；配对 reqId、判迟到 / 重复 / 过期、兜底都在 session.ts。
 import { isAdvisorReply, isAdvisorStreamEvent, type AdvisorAgent, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type AdvisorStreamEvent } from './types';
+import { normalizeLlmAdvice } from '../game/chatFormat';
 
 type ReplyCb = (reply: AdvisorReply) => void;
 type StreamCb = (ev: AdvisorStreamEvent) => void;
@@ -16,6 +17,7 @@ export class HostChannel implements AdvisorChannel {
    * false = 宿主说没配军师、或是不认识军师的老宿主（context 里没有 advisor 字段）→ post 时立刻回 NO_ADVISOR 让会话秒切本地，不白等截止。
    */
   available: boolean | null = null;
+  private lastStateVersion = 0;
   private pending: { req: AdvisorRequest; at: number }[] = [];
   private cbs: ReplyCb[] = [];
   private streamCbs: StreamCb[] = [];
@@ -28,7 +30,9 @@ export class HostChannel implements AdvisorChannel {
   ) {
     this.fallbackName = name;
     subscribe((m) => {
-      const r = { reqId: m.reqId, ok: m.ok, payload: m.payload, error: m.error, provider: m.provider, latencyMs: m.latencyMs, agent: m.agent };
+      const lastVer = this.lastStateVersion;
+      const rawPayload = m.ok === true && m.payload && typeof m.payload === 'object' ? normalizeLlmAdvice(m.payload, lastVer) : m.payload;
+      const r = { reqId: m.reqId, ok: m.ok, payload: rawPayload, error: m.error, provider: m.provider, latencyMs: m.latencyMs, agent: m.agent };
       if (isAdvisorReply(r)) for (const cb of this.cbs) cb(r);
     });
     subscribeStream?.((m) => {
@@ -51,6 +55,7 @@ export class HostChannel implements AdvisorChannel {
     this.agent = agent;
   }
   private buildWire(req: AdvisorRequest): Record<string, unknown> {
+    if (typeof req.stateVersion === 'number' && Number.isFinite(req.stateVersion)) this.lastStateVersion = req.stateVersion;
     const wire: Record<string, unknown> = { type: 'td:advisor:request', ...req };
     if (this.agent && !wire.agent) wire.agent = this.agent;
     return wire;

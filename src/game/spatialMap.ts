@@ -1,6 +1,8 @@
-// 空间皮肤地图原位投影与透明图层渲染（任务 94bbcebe）。
-// 将塔防的确定性逻辑格坐标 (cx, cy) / 毫格坐标 (mx, my) 实时正逆投影到宿主 #hub-view 空间皮肤地图（KMSpatial 正交相机）的场景地面坐标上，
-// 去掉独立浮层灰盒棋盘背景，直接在空间皮肤地图上绘制行军路线、沿途建塔点位、2.5D 塔台、敌军与军师落点建议。
+// 空间皮肤地图原位投影与高质感立体轨道渲染（任务 94bbcebe / 大厅 #25648 / 任务 997eeae6）。
+// 将塔防的确定性逻辑格坐标 (cx, cy) / 毫格坐标 (mx, my) 实时正逆投影到宿主 #hub-view 皮肤地图的场景地面坐标上：
+// 1. 去掉死板的外围矩形网格框、逐格方块与满屏 #编号，彻底消除「浮层画格子」感；
+// 2. 绘制 5 层 2.5D 等轴测立体轨道（地面阴影 + 护坡路基 + 等轴测轨枕刻度 + 双侧平行护栏导轨 + 中央流光导引脉冲）；
+// 3. 沿途建塔位采用贴地圆形/菱形战术承重基座，悬停或军师推荐时浮现胶囊铭牌与透视射程光环。
 import { CELL } from '../runtime/sim';
 import type { BattleState, Cell, ContentPack } from '../runtime/types';
 import { reachTable, slotCell } from '../advisor/snapshot';
@@ -140,6 +142,15 @@ function expandPathSet(path: Cell[]): Set<string> {
   return out;
 }
 
+/** 将不同皮肤的默认相机旋转角按 π/2 正交象限折叠到正前等轴测舒适区间 [-0.68, 0.68]，避免如 gothic-cathedral-3d (-2.55) 导致防线上下颠倒 */
+function alignStreetAzimuth(rawAzimuth: number): number {
+  let a = rawAzimuth;
+  const step = Math.PI / 2;
+  while (a < -0.68) a += step;
+  while (a > 0.68) a -= step;
+  return a;
+}
+
 export function createSpatialProjector(
   pack: ContentPack,
   viewportW: number,
@@ -150,30 +161,30 @@ export function createSpatialProjector(
   const H = pack.map.height;
   const vw = Math.max(320, viewportW);
   const vh = Math.max(240, viewportH);
-  const azimuth = hostMap ? hostMap.azimuth : -0.38;
-  const pitch = hostMap ? Math.max(0.48, Math.min(1.32, hostMap.pitch)) : 0.78;
-  const zoom = hostMap ? Math.max(0.55, Math.min(3.2, hostMap.zoom)) : 1;
+  const azimuth = hostMap ? alignStreetAzimuth(hostMap.azimuth) : -0.38;
+  const pitch = hostMap ? Math.max(0.54, Math.min(1.18, hostMap.pitch)) : 0.76;
+  const zoom = hostMap ? Math.max(0.6, Math.min(2.8, hostMap.zoom)) : 1;
 
   const cosA = Math.cos(azimuth);
   const sinA = Math.sin(azimuth);
   const sinP = Math.sin(pitch);
 
-  // 计算旋转与俯仰后的战场包络，留出顶部 HUD、左侧军师卡与底部 dock 的安全边距
+  // 计算旋转与俯仰后的战场包络，留出顶部指挥条、两侧紧凑对话框与底部 dock 的安全边距
   const spanX = Math.max(4, W * Math.abs(cosA) + H * Math.abs(sinA));
   const spanY = Math.max(3, (W * Math.abs(sinA) + H * Math.abs(cosA)) * sinP);
-  const safeW = Math.max(240, vw * 0.68);
-  const safeH = Math.max(180, vh * 0.62);
+  const safeW = Math.max(260, vw * 0.64);
+  const safeH = Math.max(200, vh * 0.60);
   const baseCell = Math.min(safeW / spanX, safeH / spanY);
-  const cellPx = Math.max(24, Math.min(84, baseCell * Math.pow(zoom, 0.45)));
+  const cellPx = Math.max(26, Math.min(82, baseCell * Math.pow(zoom, 0.42)));
 
-  // 战场中心锚定在宿主空间地图的中心 / 母星地标附近，并夹在安全视口内以免被顶栏或底栏遮挡
-  const defaultOriginX = Math.round(vw * 0.53);
-  const defaultOriginY = Math.round(vh * 0.47);
+  // 战场中心锚定在宿主空间地图的中心 / 母星地标附近，并夹在安全视口内
+  const defaultOriginX = Math.round(vw * 0.51);
+  const defaultOriginY = Math.round(vh * 0.48);
   const rawX = hostMap?.center ? hostMap.center.x * (vw / Math.max(1, hostMap.w)) : defaultOriginX;
   const rawY = hostMap?.center ? hostMap.center.y * (vh / Math.max(1, hostMap.h)) : defaultOriginY;
   const origin = {
-    x: Math.round(Math.max(vw * 0.34, Math.min(vw * 0.68, rawX * 0.55 + defaultOriginX * 0.45))),
-    y: Math.round(Math.max(vh * 0.34, Math.min(vh * 0.62, rawY * 0.55 + defaultOriginY * 0.45))),
+    x: Math.round(Math.max(vw * 0.36, Math.min(vw * 0.64, rawX * 0.52 + defaultOriginX * 0.48))),
+    y: Math.round(Math.max(vh * 0.35, Math.min(vh * 0.60, rawY * 0.52 + defaultOriginY * 0.48))),
   };
 
   const cellToScreen = (gx: number, gy: number): { x: number; y: number } => {
@@ -287,12 +298,35 @@ function rgba(hex: string | undefined, alpha: number, fallback = '100,140,160'):
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function tracePoly(ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[]) {
-  if (!pts.length) return;
+function drawPillTag(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  bgHex: string,
+  fgHex: string,
+  borderHex: string,
+  alpha = 0.92,
+) {
+  ctx.save();
+  ctx.font = '600 11px "IBM Plex Sans", "PingFang SC", system-ui, sans-serif';
+  const padX = 7;
+  const h = 20;
+  const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
+  const rx = x - w / 2;
+  const ry = y - h / 2;
+  ctx.fillStyle = rgba(bgHex, alpha, '36,46,64');
+  ctx.strokeStyle = rgba(borderHex, 0.75, '180,190,200');
+  ctx.lineWidth = 1.2;
   ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.closePath();
+  ctx.roundRect(rx, ry, w, h, 10);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = fgHex;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y + 0.5);
+  ctx.restore();
 }
 
 export interface SpatialDrawOptions {
@@ -318,190 +352,390 @@ export function drawSpatialBattlefield(
   opts: SpatialDrawOptions,
 ) {
   const { width, height } = ctx.canvas;
-  // 1. 透明画布清屏：不画整块灰盒棋盘背景，直接透出底下 #hub-view 的 3D 空间皮肤地图
+  // 1. 透明画布清屏：直接透出底下 #hub-view 的空间/平面皮肤地图，严禁绘制任何不透明底板或大矩形网格框
   ctx.clearRect(0, 0, width, height);
 
   const accent = theme.accent ?? theme.base ?? '#356d73';
   const ink = theme.ink ?? theme.text ?? '#263443';
   const paper = theme.paper ?? '#f3f5eb';
+  const hair = theme.hair ?? '#9aa8a6';
+  const roadColor = theme.path ?? '#717e7d';
+  const roadAlt = theme.pathAlt ?? '#5c6867';
   const danger = theme.danger ?? '#c03221';
   const okColor = theme.ok ?? '#338a72';
+  const aspectY = Math.max(0.52, Math.min(0.88, Math.sin(proj.pitch)));
 
-  // 2. 空间皮肤地图场景节点锚定引线（将宿主 3D 场景中的母星与站点地标同防线相连）
+  const waypoints = pack.map.path.map((c) => proj.cellToScreen(c.x + 0.5, c.y + 0.5));
+  if (waypoints.length < 2) return;
+
+  // 2. 场景地标与片区脉络微光引线（将宿主皮肤地图中的地标与防线终点/起点轻柔衔接）
   if (proj.hostMap) {
     const scaleX = width / Math.max(1, proj.hostMap.w);
     const scaleY = height / Math.max(1, proj.hostMap.h);
-    const endCell = pack.map.path[pack.map.path.length - 1];
-    const basePt = proj.cellToScreen(endCell.x + 0.5, endCell.y + 0.5);
+    const basePt = waypoints[waypoints.length - 1];
     ctx.save();
-    ctx.setLineDash([4, 4]);
-    ctx.lineWidth = 1.2;
-    ctx.strokeStyle = rgba(accent, 0.35);
+    ctx.setLineDash([3, 5]);
+    ctx.lineWidth = 1.1;
+    ctx.strokeStyle = rgba(accent, 0.28);
     for (const lm of proj.hostMap.landmarks.slice(0, 4)) {
       const lx = lm.x * scaleX;
       const ly = lm.y * scaleY;
+      const mx = (lx + basePt.x) * 0.5;
+      const my = (ly + basePt.y) * 0.5 - 18;
       ctx.beginPath();
       ctx.moveTo(lx, ly);
-      ctx.lineTo(basePt.x, basePt.y);
+      ctx.quadraticCurveTo(mx, my, basePt.x, basePt.y);
       ctx.stroke();
-      ctx.fillStyle = rgba(accent, 0.22);
+      ctx.fillStyle = rgba(accent, 0.24);
       ctx.beginPath();
-      ctx.arc(lx, ly, 5, 0, Math.PI * 2);
+      ctx.ellipse(lx, ly, 6, 6 * aspectY, 0, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
   }
 
-  // 3. 战区等轴测轻边界框（只勾勒防区地界，不遮挡 3D 城市建筑与道路）
+  // 3. 五层 2.5D 等轴测立体轨道（Spline Track & Dual Rails with 3D Extruded Side Wall & Ambient Shadow）
+  const trackW = Math.max(20, proj.cellPx * 0.54);
+  const innerW = Math.max(14, proj.cellPx * 0.38);
+  const railOffset = Math.max(7.5, proj.cellPx * 0.22);
+  const deckThickness = Math.max(4.5, proj.cellPx * 0.11);
+
+  const traceCenterPath = (offsetX = 0, offsetY = 0) => {
+    ctx.beginPath();
+    ctx.moveTo(waypoints[0].x + offsetX, waypoints[0].y + offsetY);
+    for (let i = 1; i < waypoints.length; i++) {
+      ctx.lineTo(waypoints[i].x + offsetX, waypoints[i].y + offsetY);
+    }
+  };
+
   ctx.save();
-  const boundary = [
-    proj.cellToScreen(0, 0),
-    proj.cellToScreen(pack.map.width, 0),
-    proj.cellToScreen(pack.map.width, pack.map.height),
-    proj.cellToScreen(0, pack.map.height),
-  ];
-  tracePoly(ctx, boundary);
-  ctx.strokeStyle = rgba(accent, 0.26);
-  ctx.lineWidth = 1.25;
-  ctx.setLineDash([6, 5]);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // (3.1) 第 1 层：地面柔和环境光遮蔽阴影（Ambient Occlusion Shadow）+ 2.5D 立体侧壁（Extruded Side Wall）
+  ctx.save();
+  ctx.shadowColor = 'rgba(8, 12, 20, 0.38)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 5;
+  traceCenterPath(0, deckThickness);
+  ctx.strokeStyle = rgba(ink, 0.68, '36,46,58');
+  ctx.lineWidth = trackW + 3;
   ctx.stroke();
   ctx.restore();
 
-  // 4. 行军路线（等轴测半透明路基 + 发光航线折线 + 动态行军箭头 + 出兵口/母星基地标识）
-  ctx.save();
-  for (const key of opts.pathCells) {
-    const [xs, ys] = key.split(',');
-    const cx = Number(xs), cy = Number(ys);
-    const corners = proj.cellCorners(cx, cy, 0.04);
-    tracePoly(ctx, corners);
-    ctx.fillStyle = rgba(theme.path, 0.42, '113,126,125');
-    ctx.fill();
-    ctx.strokeStyle = rgba(accent, 0.34);
-    ctx.lineWidth = 1;
+  // 立体下缘暗部侧墙（表现出石板/栈道高出地面的 3D 厚度）
+  for (let d = deckThickness; d >= 1.5; d -= 1.5) {
+    traceCenterPath(0, d);
+    ctx.strokeStyle = rgba(ink, 0.52, '42,52,64');
+    ctx.lineWidth = trackW + 2;
     ctx.stroke();
   }
 
-  const waypoints = pack.map.path.map((c) => proj.cellToScreen(c.x + 0.5, c.y + 0.5));
-  if (waypoints.length >= 2) {
-    // 路线外发光与主干线
-    ctx.beginPath();
-    ctx.moveTo(waypoints[0].x, waypoints[0].y);
-    for (let i = 1; i < waypoints.length; i++) ctx.lineTo(waypoints[i].x, waypoints[i].y);
-    ctx.strokeStyle = rgba(danger, 0.25, '192,50,33');
-    ctx.lineWidth = Math.max(6, proj.cellPx * 0.22);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+  // (3.2) 第 2 层：立体受光顶面路基与内层装甲轨床
+  traceCenterPath(0, 0);
+  ctx.strokeStyle = rgba(paper, 0.65, '240,244,240');
+  ctx.lineWidth = trackW + 1.5;
+  ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(waypoints[0].x, waypoints[0].y);
-    for (let i = 1; i < waypoints.length; i++) ctx.lineTo(waypoints[i].x, waypoints[i].y);
-    ctx.strokeStyle = rgba(accent, 0.82);
-    ctx.lineWidth = 2.4;
-    ctx.setLineDash([10, 6]);
-    ctx.lineDashOffset = -((opts.now * 0.03) % 16);
-    ctx.stroke();
-    ctx.setLineDash([]);
+  traceCenterPath(0, 0);
+  ctx.strokeStyle = rgba(roadColor, 0.92, '113,126,125');
+  ctx.lineWidth = trackW - 1.5;
+  ctx.stroke();
 
-    // 沿途方向箭头
-    for (let i = 1; i < waypoints.length; i++) {
-      const a = waypoints[i - 1], b = waypoints[i];
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      const ang = Math.atan2(b.y - a.y, b.x - a.x);
-      const sz = Math.max(5, proj.cellPx * 0.14);
-      ctx.save();
-      ctx.translate(mx, my);
-      ctx.rotate(ang);
+  traceCenterPath(0, 0);
+  ctx.strokeStyle = rgba(roadAlt, 0.82, '88,100,102');
+  ctx.lineWidth = innerW;
+  ctx.stroke();
+
+  // (3.3) 第 3 层：等轴测立体轨枕石板（Beveled Sleepers）与双侧平行立体护栏导轨（Dual 3D Rails）
+  const sleeperStep = Math.max(10, proj.cellPx * 0.25);
+  const sleeperHalf = railOffset * 0.88;
+
+  for (let i = 1; i < waypoints.length; i++) {
+    const a = waypoints[i - 1], b = waypoints[i];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const segLen = Math.hypot(dx, dy);
+    if (segLen < 1) continue;
+    const ux = dx / segLen, uy = dy / segLen;
+    const nx = -uy, ny = ux;
+
+    // 轨枕暗影槽与亮面横档（一明一暗形成真实凹凸雕刻感）
+    for (let d = sleeperStep * 0.6; d < segLen - sleeperStep * 0.4; d += sleeperStep) {
+      const px = a.x + ux * d;
+      const py = a.y + uy * d;
+      ctx.strokeStyle = rgba(ink, 0.36);
+      ctx.lineWidth = 2.4;
       ctx.beginPath();
-      ctx.moveTo(-sz, -sz * 0.7);
-      ctx.lineTo(sz * 0.5, 0);
-      ctx.lineTo(-sz, sz * 0.7);
-      ctx.strokeStyle = rgba(paper, 0.9, '255,255,255');
-      ctx.lineWidth = 2;
+      ctx.moveTo(px - nx * sleeperHalf, py - ny * sleeperHalf + 1.2);
+      ctx.lineTo(px + nx * sleeperHalf, py + ny * sleeperHalf + 1.2);
       ctx.stroke();
-      ctx.restore();
+
+      ctx.strokeStyle = rgba(paper, 0.42, '245,248,245');
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(px - nx * sleeperHalf, py - ny * sleeperHalf);
+      ctx.lineTo(px + nx * sleeperHalf, py + ny * sleeperHalf);
+      ctx.stroke();
     }
 
-    // 出兵口（起点）与母星基地（终点）
-    const startPt = waypoints[0];
-    ctx.fillStyle = rgba(danger, 0.88, '192,50,33');
-    ctx.beginPath();
-    ctx.arc(startPt.x, startPt.y, Math.max(7, proj.cellPx * 0.18), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 1.8;
-    ctx.stroke();
-    ctx.fillStyle = ink;
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(opts.lang === 'zh' ? '出兵口' : 'Spawn', startPt.x, startPt.y - Math.max(11, proj.cellPx * 0.25));
+    // 左右双平行立体护栏导轨（含侧壁暗影 + 主轨色 + 顶部受光高光）
+    for (const sign of [-1, 1]) {
+      const rx0 = a.x + nx * railOffset * sign;
+      const ry0 = a.y + ny * railOffset * sign;
+      const rx1 = b.x + nx * railOffset * sign;
+      const ry1 = b.y + ny * railOffset * sign;
 
-    const endCell = pack.map.path[pack.map.path.length - 1];
-    const endCorners = proj.cellCorners(endCell.x, endCell.y, 0.08);
-    tracePoly(ctx, endCorners);
-    ctx.fillStyle = rgba(accent, 0.85);
-    ctx.fill();
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    const endPt = waypoints[waypoints.length - 1];
-    ctx.fillStyle = paper;
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(opts.lang === 'zh' ? '母星基地' : 'Base', endPt.x, endPt.y + 4);
+      ctx.beginPath();
+      ctx.moveTo(rx0, ry0 + 2);
+      ctx.lineTo(rx1, ry1 + 2);
+      ctx.strokeStyle = rgba(ink, 0.55);
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(rx0, ry0);
+      ctx.lineTo(rx1, ry1);
+      ctx.strokeStyle = rgba(accent, 0.88);
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(rx0, ry0 - 0.8);
+      ctx.lineTo(rx1, ry1 - 0.8);
+      ctx.strokeStyle = rgba(paper, 0.55, '255,255,255');
+      ctx.lineWidth = 0.9;
+      ctx.stroke();
+    }
   }
+
+  // 折角枢纽立体转盘（带 3D 底座厚度与内环铆钉）
+  for (let i = 1; i < waypoints.length - 1; i++) {
+    const wp = waypoints[i];
+    const r = railOffset * 0.98;
+    ctx.fillStyle = rgba(ink, 0.55);
+    ctx.beginPath();
+    ctx.ellipse(wp.x, wp.y + 2.5, r, r * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = rgba(roadAlt, 0.95);
+    ctx.strokeStyle = rgba(accent, 0.85);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.ellipse(wp.x, wp.y, r, r * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // (3.4) 第 4 层：轨道中央发光能量导引槽与动态流光脉冲
+  ctx.save();
+  ctx.shadowColor = accent;
+  ctx.shadowBlur = 6;
+  traceCenterPath(0, 0);
+  ctx.strokeStyle = rgba(accent, 0.48);
+  ctx.lineWidth = 4.5;
+  ctx.stroke();
   ctx.restore();
 
-  // 5. 建塔点位（直接在空间皮肤地图坐标上绘制沿途等轴测建塔基座与槽位号）
+  traceCenterPath(0, 0);
+  ctx.strokeStyle = rgba(paper, 0.90, '255,255,255');
+  ctx.lineWidth = 2.0;
+  ctx.setLineDash([8, 10]);
+  ctx.lineDashOffset = -((opts.now * 0.032) % 18);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 沿途动态流光方向标（Chevrons）
+  for (let i = 1; i < waypoints.length; i++) {
+    const a = waypoints[i - 1], b = waypoints[i];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 24) continue;
+    const ang = Math.atan2(dy, dx);
+    const sz = Math.max(4.5, proj.cellPx * 0.11);
+    const phase = ((opts.now * 0.045) % 42) / 42;
+    const tPos = 0.25 + phase * 0.5;
+    const mx = a.x + dx * tPos;
+    const my = a.y + dy * tPos;
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(-sz, -sz * 0.75);
+    ctx.lineTo(sz * 0.55, 0);
+    ctx.lineTo(-sz, sz * 0.75);
+    ctx.strokeStyle = rgba(paper, 0.95, '255,255,255');
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // (3.5) 起点「敌军入口」与终点「母星防线」2.5D 阶梯式立体堡垒高台
+  const drawSteppedBastion = (pt: { x: number; y: number }, r: number, mainColor: string) => {
+    ctx.save();
+    ctx.shadowColor = 'rgba(8, 12, 20, 0.42)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = rgba(ink, 0.65);
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y + 4, r * 1.25, r * 1.25 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = rgba(paper, 0.88);
+    ctx.strokeStyle = rgba(mainColor, 0.75);
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y + 1.5, r * 1.18, r * 1.18 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = rgba(mainColor, 0.92);
+    ctx.strokeStyle = paper;
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y - 2, r * 0.86, r * 0.86 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = rgba(paper, 0.88);
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y - 3.5, r * 0.36, r * 0.36 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  const startPt = waypoints[0];
+  const portalR = Math.max(12, proj.cellPx * 0.29);
+  drawSteppedBastion(startPt, portalR, danger);
+  drawPillTag(
+    ctx,
+    opts.lang === 'zh' ? '敌军入口' : 'Spawn',
+    startPt.x,
+    startPt.y - portalR * aspectY - 15,
+    paper,
+    danger,
+    danger,
+  );
+
+  const endPt = waypoints[waypoints.length - 1];
+  const baseR = Math.max(14.5, proj.cellPx * 0.35);
+  drawSteppedBastion(endPt, baseR, accent);
+  drawPillTag(
+    ctx,
+    opts.lang === 'zh' ? `母星防线 ${state.base_hp}/${pack.map.base_hp}` : `Base ${state.base_hp}/${pack.map.base_hp}`,
+    endPt.x,
+    endPt.y - baseR * aspectY - 16,
+    paper,
+    ink,
+    accent,
+  );
+  ctx.restore();
+
+  // 4. 沿途 2.5D 立体战术建塔基座（Tactical Emplacement Pads：双层立体圆台 + 侧壁厚度，无杂乱 #编号）
   const occupiedSet = new Set(state.occupied);
-  const primarySlots = proj.tacticalSlots.filter((ts) => ts.adjacentToPath).slice(0, 28);
-  const primarySet = new Set(primarySlots.map((ts) => ts.slot));
+  const primarySlots = proj.tacticalSlots.filter((ts) => ts.adjacentToPath).slice(0, 16);
+  const padR = Math.max(8, proj.cellPx * 0.21);
+
+  const advisedMap = new Map<number, { optId: string; towerName: string; adopted: boolean }>();
+  if (opts.cardView.current && (state.phase === 'build' || state.phase === 'wave')) {
+    const cur = opts.cardView.current;
+    for (const o of cur.advice.options) {
+      for (const m of o.moves) {
+        if (!advisedMap.has(m.slot)) {
+          const tName = pack.towers.find((t) => t.id === m.tower)?.display_name ?? m.tower;
+          advisedMap.set(m.slot, { optId: o.id.toUpperCase(), towerName: tName, adopted: cur.adopted.includes(o.id) });
+        }
+      }
+    }
+  }
 
   ctx.save();
   for (const ts of primarySlots) {
     const key = `${ts.x},${ts.y}`;
     if (occupiedSet.has(key)) continue;
-    const isHovered = opts.hoverCell && opts.hoverCell.cx === ts.x && opts.hoverCell.cy === ts.y;
-    const corners = proj.cellCorners(ts.x, ts.y, 0.16);
-    tracePoly(ctx, corners);
-    ctx.fillStyle = isHovered ? rgba(accent, 0.36) : rgba(paper, 0.22, '240,244,240');
+    const isHovered = !!(opts.hoverCell && opts.hoverCell.cx === ts.x && opts.hoverCell.cy === ts.y);
+    const advised = advisedMap.get(ts.slot);
+    const r = isHovered || advised ? padR * 1.18 : padR;
+
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.26)';
+    ctx.beginPath();
+    ctx.ellipse(ts.sx, ts.sy + 3.2, r + 1.5, (r + 1.5) * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = isHovered ? accent : rgba(accent, 0.58);
-    ctx.lineWidth = isHovered ? 2.2 : 1.3;
+
+    ctx.fillStyle = rgba(ink, 0.45);
+    ctx.beginPath();
+    ctx.ellipse(ts.sx, ts.sy + 1.8, r, r * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = isHovered
+      ? rgba(accent, 0.48)
+      : advised
+        ? rgba(accent, 0.34)
+        : rgba(paper, 0.68, '240,244,240');
+    ctx.strokeStyle = isHovered || advised ? accent : rgba(hair, 0.85, '140,155,155');
+    ctx.lineWidth = isHovered || advised ? 2.0 : 1.4;
+    ctx.beginPath();
+    ctx.ellipse(ts.sx, ts.sy, r, r * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
 
-    // 基座中心十字/圆环与槽位编号
-    ctx.fillStyle = isHovered ? accent : rgba(ink, 0.78);
-    ctx.font = `${isHovered ? 'bold ' : ''}10px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText(`#${ts.slot}`, ts.sx, ts.sy + 3.5);
+    ctx.strokeStyle = isHovered || advised ? rgba(paper, 0.8) : rgba(ink, 0.28);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(ts.sx, ts.sy, r * 0.55, r * 0.55 * aspectY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = isHovered || advised ? accent : rgba(ink, 0.45);
+    ctx.beginPath();
+    ctx.arc(ts.sx, ts.sy, isHovered || advised ? 2.5 : 1.8, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  // 若鼠标悬停在非主推但合法的可建格上，同样高亮其等轴测建塔基座与射程椭圆
+  // 5. 军师建议落点铭牌（精巧胶囊标在对应基座上方，如「A·弩车」）
+  for (const [slotId, info] of advisedMap.entries()) {
+    const c = slotCell(pack, slotId);
+    if (!c || occupiedSet.has(`${c.x},${c.y}`)) continue;
+    const pt = proj.cellToScreen(c.x + 0.5, c.y + 0.5);
+    ctx.save();
+    ctx.globalAlpha = info.adopted ? 0.45 : 0.96;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.8;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y, padR * 1.45, padR * 1.45 * aspectY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawPillTag(
+      ctx,
+      `${info.optId}·${info.towerName}`,
+      pt.x,
+      pt.y - padR * aspectY - 12,
+      paper,
+      ink,
+      accent,
+      info.adopted ? 0.5 : 0.94,
+    );
+    ctx.restore();
+  }
+
+  // 6. 鼠标悬停建塔预览与等轴测透视射程光环
   if (opts.hoverCell) {
     const { cx, cy, slot } = opts.hoverCell;
     if (slot >= 0 && !occupiedSet.has(`${cx},${cy}`)) {
-      if (!primarySet.has(slot)) {
-        const corners = proj.cellCorners(cx, cy, 0.14);
-        tracePoly(ctx, corners);
-        ctx.fillStyle = rgba(accent, 0.34);
-        ctx.fill();
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      const center = proj.cellToScreen(cx + 0.5, cy + 0.5);
       const towerDef = pack.towers.find((t) => t.id === opts.selectedTowerId) ?? pack.towers[0];
       if (towerDef) {
-        const center = proj.cellToScreen(cx + 0.5, cy + 0.5);
         const rx = (towerDef.range / CELL) * proj.cellPx;
-        const ry = rx * Math.sin(proj.pitch);
+        const ry = rx * aspectY;
+        const grad = ctx.createRadialGradient(center.x, center.y, Math.max(4, rx * 0.1), center.x, center.y, rx);
+        grad.addColorStop(0, rgba(accent, 0.18));
+        grad.addColorStop(1, rgba(accent, 0.04));
+        ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.ellipse(center.x, center.y, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fillStyle = rgba(accent, 0.10);
         ctx.fill();
-        ctx.strokeStyle = rgba(accent, 0.55);
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = rgba(accent, 0.68);
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -509,96 +743,126 @@ export function drawSpatialBattlefield(
   }
   ctx.restore();
 
-  // 6. 军师建议落点叠层（a/b/c 选项直接标在空间地图对应建塔点位上）
-  if (opts.cardView.current && (state.phase === 'build' || state.phase === 'wave')) {
-    const cur = opts.cardView.current;
-    ctx.save();
-    ctx.lineWidth = 2.2;
-    ctx.strokeStyle = accent;
-    ctx.fillStyle = accent;
-    ctx.font = 'bold 12px sans-serif';
-    ctx.textAlign = 'center';
-    const seen = new Map<string, number>();
-    for (const o of cur.advice.options) {
-      for (const m of o.moves) {
-        const c = slotCell(pack, m.slot);
-        if (!c) continue;
-        const k = `${c.x},${c.y}`;
-        const count = seen.get(k) ?? 0;
-        seen.set(k, count + 1);
-        const corners = proj.cellCorners(c.x, c.y, 0.10);
-        ctx.globalAlpha = cur.adopted.includes(o.id) ? 0.4 : 0.95;
-        ctx.setLineDash(o.id === 'a' ? [] : [4, 3]);
-        tracePoly(ctx, corners);
-        ctx.stroke();
-        const pt = proj.cellToScreen(c.x + 0.5, c.y + 0.5);
-        ctx.setLineDash([]);
-        ctx.fillText(`${o.id}(#${m.slot})`, pt.x + count * 14, pt.y - proj.cellPx * 0.24);
-      }
-    }
-    ctx.restore();
-  }
-
-  // 7. 已建防御塔（2.5D 等轴测塔座 + 炮台）
+  // 7. 已建防御塔（2.5D 等轴测立体炮座 + 转向炮管 + 徽章）
   for (const tw of state.towers) {
     const def = pack.towers.find((d) => d.id === tw.def)!;
-    const corners = proj.cellCorners(tw.cx, tw.cy, 0.14);
     const center = proj.cellToScreen(tw.cx + 0.5, tw.cy + 0.5);
     const towerColor = def.color ?? accent;
+    const baseRad = Math.max(10, proj.cellPx * 0.25);
+    const lift = Math.max(6, proj.cellPx * 0.16);
+
+    // 寻找射程内最近敌人以计算炮口朝向
+    let aimAngle = -Math.PI / 4;
+    if (state.enemies.length) {
+      let bestD = Infinity;
+      for (const e of state.enemies) {
+        const ep = proj.milliToScreen(e.x, e.y);
+        const d = Math.hypot(ep.x - center.x, ep.y - center.y);
+        if (d < bestD) {
+          bestD = d;
+          aimAngle = Math.atan2(ep.y - (center.y - lift), ep.x - center.x);
+        }
+      }
+    }
+
     ctx.save();
     ctx.globalAlpha = tw.life === 'pending' ? 0.55 : 1;
-    tracePoly(ctx, corners);
-    ctx.fillStyle = theme.tower ?? paper;
+
+    // 塔座地面阴影
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.30)';
+    ctx.beginPath();
+    ctx.ellipse(center.x, center.y + 3, baseRad * 1.15, baseRad * 1.15 * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
+
+    // 等轴测下层装甲底盘
+    ctx.fillStyle = theme.tower ?? paper;
     ctx.strokeStyle = towerColor;
     ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(center.x, center.y, baseRad, baseRad * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
 
-    // 2.5D 塔身立柱
-    const lift = Math.max(8, proj.cellPx * 0.24);
-    ctx.fillStyle = towerColor;
+    // 2.5D 炮塔转台主体
+    const turretY = center.y - lift;
+    const turretR = Math.max(7.5, proj.cellPx * 0.18);
+
+    // 炮管/弩臂指示器
+    ctx.strokeStyle = paper;
+    ctx.lineWidth = 4.2;
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.arc(center.x, center.y - lift * 0.45, Math.max(8, proj.cellPx * 0.22), 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(center.x, turretY);
+    ctx.lineTo(center.x + Math.cos(aimAngle) * (turretR * 1.45), turretY + Math.sin(aimAngle) * (turretR * 1.45));
+    ctx.stroke();
+
+    ctx.strokeStyle = towerColor;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(center.x, turretY);
+    ctx.lineTo(center.x + Math.cos(aimAngle) * (turretR * 1.45), turretY + Math.sin(aimAngle) * (turretR * 1.45));
+    ctx.stroke();
+
+    // 炮塔圆顶
+    ctx.fillStyle = towerColor;
     ctx.strokeStyle = paper;
     ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(center.x, turretY, turretR, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
 
     ctx.fillStyle = paper;
-    ctx.font = 'bold 11px sans-serif';
+    ctx.font = 'bold 10px "IBM Plex Sans", "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(def.display_name[0], center.x, center.y - lift * 0.45 + 4);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.display_name[0], center.x, turretY + 0.5);
     ctx.restore();
   }
 
-  // 8. 行军中的敌军与血条（按毫格坐标实时投影到空间地图路线上）
+  // 8. 行军中的敌军与圆角生命条（带地面椭圆阴影与立体护甲剪影）
   for (const e of state.enemies) {
     const def = pack.enemies.find((d) => d.id === e.def)!;
     const pt = proj.milliToScreen(e.x, e.y);
-    const r = Math.max(6, proj.cellPx * 0.18);
+    const r = Math.max(6.5, proj.cellPx * 0.17);
     ctx.save();
+
+    // 地面椭圆阴影
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y + 3, r * 0.95, r * 0.95 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 立体敌军主体
+    const liftY = pt.y - 3;
     ctx.fillStyle = danger;
     ctx.beginPath();
-    ctx.moveTo(pt.x, pt.y - r * 1.25);
-    ctx.lineTo(pt.x + r, pt.y);
-    ctx.lineTo(pt.x, pt.y + r * 0.85);
-    ctx.lineTo(pt.x - r, pt.y);
+    ctx.moveTo(pt.x, liftY - r * 1.2);
+    ctx.lineTo(pt.x + r * 0.95, liftY);
+    ctx.lineTo(pt.x, liftY + r * 0.85);
+    ctx.lineTo(pt.x - r * 0.95, liftY);
     ctx.closePath();
     ctx.fill();
     ctx.strokeStyle = paper;
-    ctx.lineWidth = 1.3;
+    ctx.lineWidth = 1.4;
     ctx.stroke();
 
-    // 血条
-    const bw = 26, bh = 4;
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(pt.x - bw / 2, pt.y - r * 1.25 - 9, bw, bh);
-    ctx.fillStyle = okColor;
-    ctx.fillRect(pt.x - bw / 2, pt.y - r * 1.25 - 9, bw * Math.max(0, e.hp) / def.hp, bh);
+    // 高对比度圆角生命条
+    const bw = 26, bh = 4.5;
+    const bx = pt.x - bw / 2, by = liftY - r * 1.2 - 8;
+    ctx.fillStyle = 'rgba(12, 18, 26, 0.68)';
+    ctx.beginPath();
+    ctx.roundRect(bx - 1, by - 1, bw + 2, bh + 2, 2.5);
+    ctx.fill();
+    const hpRatio = Math.max(0, Math.min(1, e.hp / def.hp));
+    ctx.fillStyle = hpRatio > 0.35 ? okColor : danger;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw * hpRatio, bh, 2);
+    ctx.fill();
     ctx.restore();
   }
 
-  // 9. 粒子与攻击弹道
+  // 9. 粒子与渐变攻击弹道
   ctx.save();
   for (const p of opts.particles) {
     ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
@@ -609,8 +873,6 @@ export function drawSpatialBattlefield(
   }
   ctx.globalAlpha = 1;
 
-  ctx.strokeStyle = theme.shot ?? accent;
-  ctx.lineWidth = 3;
   ctx.lineCap = 'round';
   for (let i = opts.shots.length - 1; i >= 0; i--) {
     const sh = opts.shots[i];
@@ -620,9 +882,19 @@ export function drawSpatialBattlefield(
     }
     const f = proj.milliToScreen(sh.fx, sh.fy);
     const t = proj.milliToScreen(sh.tx, sh.ty);
-    ctx.globalAlpha = Math.max(0, (sh.until - opts.now) / 90);
+    const alpha = Math.max(0, (sh.until - opts.now) / 90);
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = rgba(paper, 0.9, '255,255,255');
+    ctx.lineWidth = 4.5;
     ctx.beginPath();
-    ctx.moveTo(f.x, f.y - 6);
+    ctx.moveTo(f.x, f.y - 8);
+    ctx.lineTo(t.x, t.y - 4);
+    ctx.stroke();
+
+    ctx.strokeStyle = theme.shot ?? accent;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(f.x, f.y - 8);
     ctx.lineTo(t.x, t.y - 4);
     ctx.stroke();
   }
@@ -631,12 +903,22 @@ export function drawSpatialBattlefield(
   // 10. 胜负结算横幅
   if (state.phase === 'won' || state.phase === 'lost') {
     ctx.save();
-    ctx.fillStyle = 'rgba(12, 18, 26, 0.52)';
-    ctx.fillRect(0, height / 2 - 48, width, 96);
-    ctx.fillStyle = paper;
-    ctx.font = 'bold 36px sans-serif';
+    const bannerW = Math.min(360, width - 40);
+    const bannerH = 68;
+    const bx = (width - bannerW) / 2;
+    const by = (height - bannerH) / 2;
+    ctx.fillStyle = rgba(paper, 0.94, '36,46,64');
+    ctx.strokeStyle = state.phase === 'won' ? okColor : danger;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bannerW, bannerH, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.font = 'bold 28px "IBM Plex Sans", "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(state.phase === 'won' ? opts.heldText : opts.fellText, width / 2, height / 2 + 12);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(state.phase === 'won' ? opts.heldText : opts.fellText, width / 2, height / 2);
     ctx.restore();
   }
 }

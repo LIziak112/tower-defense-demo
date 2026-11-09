@@ -6,6 +6,7 @@ import A from '../content/packs/changban_rain_night.json';
 import type { RawPack } from '../content/schema';
 import { levelPrompt } from '../advisor/prompt';
 import { LIMITS, type AdvisorAgent, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type AdvisorStreamEvent } from '../advisor/types';
+import { sanitizeLlmPack } from '../game/chatFormat';
 import type { GenerateInput } from './provider';
 
 export interface LlmProviderOptions {
@@ -129,6 +130,6 @@ export class LlmContentProvider {
     if (p.timer) clearTimeout(p.timer);
     if (!r.ok) return p.reject(new Error(r.error.code || 'TRANSPORT'));
     if (!r.payload || typeof r.payload !== 'object') return p.reject(new Error('BAD_SHAPE'));
-    p.resolve(r.payload as RawPack);
+    p.resolve(sanitizeLlmPack(r.payload));
   }
 }
