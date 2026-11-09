@@ -149,9 +149,9 @@ export const SKIN_CULTURAL_LEXICONS: Record<SkinId, SkinCulturalLexicon> = {
       footman: { id: 'footman', legacyZh: '步卒', zh: '相位护盾巡逻机', en: 'Phase-Shield Drone', trait: 'shield', traitLabelZh: '相位护盾', traitLabelEn: 'Phase Shield', counteredByZh: '脉冲棱镜塔（高频破盾 ×1.35）', counteredByEn: 'Pulse Prism (×1.35 vs Shield)' },
       light_cavalry: { id: 'light_cavalry', legacyZh: '轻骑', zh: '裂隙闪击快艇', en: 'Rift Skiff', trait: 'speed', traitLabelZh: '跃迁闪击', traitLabelEn: 'Warp Skirmish', counteredByZh: '引力锚定井（湍流截击 ×1.35）', counteredByEn: 'Gravity Well (×1.35 vs Fast)' },
       heavy_armor: { id: 'heavy_armor', legacyZh: '重甲', zh: '暗物质重装舰', en: 'Dark-Matter Dreadnought', trait: 'armor', traitLabelZh: '重装舰体', traitLabelEn: 'Heavy Hull', counteredByZh: '轨道天基炮（动能破甲 ×1.35）', counteredByEn: 'Orbital Cannon (×1.35 vs Armor)' },
-      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '暗物质重装舰', en: 'Dark-Matter Dreadnought', trait: 'armor', traitLabelZh: '重装舰体', traitLabelEn: 'Heavy Hull', counteredByZh: '轨道天基炮（动能破甲 ×1.35）', counteredByEn: 'Orbital Cannon (×1.35 vs Armor)' },
-      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '裂隙闪击快艇', en: 'Rift Skiff', trait: 'speed', traitLabelZh: '跃迁闪击', traitLabelEn: 'Warp Skirmish', counteredByZh: '引力锚定井（湍流截击 ×1.35）', counteredByEn: 'Gravity Well (×1.35 vs Fast)' },
-      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '相位护盾巡逻机', en: 'Phase-Shield Drone', trait: 'shield', traitLabelZh: '相位护盾', traitLabelEn: 'Phase Shield', counteredByZh: '脉冲棱镜塔（高频破盾 ×1.35）', counteredByEn: 'Pulse Prism (×1.35 vs Shield)' },
+      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '泰坦工程机甲', en: 'Titan Siege Mech', trait: 'armor', traitLabelZh: '反应堆重甲', traitLabelEn: 'Reactor Armor', counteredByZh: '轨道天基炮（动能破甲 ×1.35）', counteredByEn: 'Orbital Cannon (×1.35 vs Armor)' },
+      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '跃迁突击飞梭', en: 'Warp Assault Shuttle', trait: 'speed', traitLabelZh: '微跃迁机动', traitLabelEn: 'Micro-Warp', counteredByZh: '引力锚定井（湍流截击 ×1.35）', counteredByEn: 'Gravity Well (×1.35 vs Fast)' },
+      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '纳米干扰蜂群', en: 'Nano-Swarm Drone', trait: 'shield', traitLabelZh: '集群偏导屏', traitLabelEn: 'Swarm Barrier', counteredByZh: '脉冲棱镜塔（高频破盾 ×1.35）', counteredByEn: 'Pulse Prism (×1.35 vs Shield)' },
     },
     presets: [
       { label: '星环磁暴防御', prompt: '星环磁暴夜，裂隙闪击快艇突袭' },
@@ -230,9 +230,9 @@ export const SKIN_CULTURAL_LEXICONS: Record<SkinId, SkinCulturalLexicon> = {
       footman: { id: 'footman', legacyZh: '步卒', zh: '磁盾巡检机器人', en: 'Mag-Shield Automaton', trait: 'shield', traitLabelZh: '磁力护盾', traitLabelEn: 'Mag Shield', counteredByZh: '电磁拦阻桩（电弧破盾 ×1.35）', counteredByEn: 'EMP Bollard (×1.35 vs Shield)' },
       light_cavalry: { id: 'light_cavalry', legacyZh: '轻骑', zh: '失控无人快车', en: 'Rogue Express Pod', trait: 'speed', traitLabelZh: '极速飙行', traitLabelEn: 'Overdrive', counteredByZh: '声波减速站（震荡截停 ×1.35）', counteredByEn: 'Sonic Suppressor (×1.35 vs Fast)' },
       heavy_armor: { id: 'heavy_armor', legacyZh: '重甲', zh: '重装装甲卡车', en: 'Armored Hauler', trait: 'armor', traitLabelZh: '复合重甲', traitLabelEn: 'Composite Armor', counteredByZh: '高能激光矩阵（热熔破甲 ×1.35）', counteredByEn: 'Laser Array (×1.35 vs Armor)' },
-      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '重装装甲卡车', en: 'Armored Hauler', trait: 'armor', traitLabelZh: '复合重甲', traitLabelEn: 'Composite Armor', counteredByZh: '高能激光矩阵（热熔破甲 ×1.35）', counteredByEn: 'Laser Array (×1.35 vs Armor)' },
-      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '失控无人快车', en: 'Rogue Express Pod', trait: 'speed', traitLabelZh: '极速飙行', traitLabelEn: 'Overdrive', counteredByZh: '声波减速站（震荡截停 ×1.35）', counteredByEn: 'Sonic Suppressor (×1.35 vs Fast)' },
-      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '磁盾巡检机器人', en: 'Mag-Shield Automaton', trait: 'shield', traitLabelZh: '磁力护盾', traitLabelEn: 'Mag Shield', counteredByZh: '电磁拦阻桩（电弧破盾 ×1.35）', counteredByEn: 'EMP Bollard (×1.35 vs Shield)' },
+      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '全自动工程盾构车', en: 'Tunnel-Borer Rig', trait: 'armor', traitLabelZh: '合金盾构壳', traitLabelEn: 'Alloy Shielding', counteredByZh: '高能激光矩阵（热熔破甲 ×1.35）', counteredByEn: 'Laser Array (×1.35 vs Armor)' },
+      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '磁悬浮疾行滑板', en: 'Mag-Lev Courier', trait: 'speed', traitLabelZh: '低空掠行', traitLabelEn: 'Low-Skim', counteredByZh: '声波减速站（震荡截停 ×1.35）', counteredByEn: 'Sonic Suppressor (×1.35 vs Fast)' },
+      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '微型脉冲巡飞弹', en: 'Micro-EMP Loiterer', trait: 'shield', traitLabelZh: '电离护膜', traitLabelEn: 'Ion Film', counteredByZh: '电磁拦阻桩（电弧破盾 ×1.35）', counteredByEn: 'EMP Bollard (×1.35 vs Shield)' },
     },
     presets: [
       { label: '滨江夜雨封控', prompt: '滨江夜雨，失控无人快车突袭' },
@@ -311,9 +311,9 @@ export const SKIN_CULTURAL_LEXICONS: Record<SkinId, SkinCulturalLexicon> = {
       footman: { id: 'footman', legacyZh: '步卒', zh: '黯影障壁食尸鬼', en: 'Umbral-Ward Ghoul', trait: 'shield', traitLabelZh: '黯影障壁', traitLabelEn: 'Umbral Ward', counteredByZh: '圣光钟楼（辉光破障 ×1.35）', counteredByEn: 'Sunlit Belfry (×1.35 vs Ward)' },
       light_cavalry: { id: 'light_cavalry', legacyZh: '轻骑', zh: '血月疾行夜魔', en: 'Blood-Moon Stalker', trait: 'speed', traitLabelZh: '疾影突袭', traitLabelEn: 'Shadow Sprint', counteredByZh: '唱诗共鸣碑（圣咏镇魂 ×1.35）', counteredByEn: 'Choir Stele (×1.35 vs Fast)' },
       heavy_armor: { id: 'heavy_armor', legacyZh: '重甲', zh: '黑曜石像魔像', en: 'Obsidian Gargoyle', trait: 'armor', traitLabelZh: '黑曜石甲', traitLabelEn: 'Obsidian Carapace', counteredByZh: '净罪重弩炮（破魔碎岩 ×1.35）', counteredByEn: 'Purging Ballista (×1.35 vs Armor)' },
-      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '黑曜石像魔像', en: 'Obsidian Gargoyle', trait: 'armor', traitLabelZh: '黑曜石甲', traitLabelEn: 'Obsidian Carapace', counteredByZh: '净罪重弩炮（破魔碎岩 ×1.35）', counteredByEn: 'Purging Ballista (×1.35 vs Armor)' },
-      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '血月疾行夜魔', en: 'Blood-Moon Stalker', trait: 'speed', traitLabelZh: '疾影突袭', traitLabelEn: 'Shadow Sprint', counteredByZh: '唱诗共鸣碑（圣咏镇魂 ×1.35）', counteredByEn: 'Choir Stele (×1.35 vs Fast)' },
-      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '黯影障壁食尸鬼', en: 'Umbral-Ward Ghoul', trait: 'shield', traitLabelZh: '黯影障壁', traitLabelEn: 'Umbral Ward', counteredByZh: '圣光钟楼（辉光破障 ×1.35）', counteredByEn: 'Sunlit Belfry (×1.35 vs Ward)' },
+      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '赎罪青铜巨像', en: 'Penitent Bronze Colossus', trait: 'armor', traitLabelZh: '古圣青铜甲', traitLabelEn: 'Sanctified Bronze', counteredByZh: '净罪重弩炮（破魔碎岩 ×1.35）', counteredByEn: 'Purging Ballista (×1.35 vs Armor)' },
+      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '尖塔夜翼石像鬼', en: 'Spire Night-Gargoyle', trait: 'speed', traitLabelZh: '俯冲猎袭', traitLabelEn: 'Dive Pounce', counteredByZh: '唱诗共鸣碑（圣咏镇魂 ×1.35）', counteredByEn: 'Choir Stele (×1.35 vs Fast)' },
+      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '冥火渡鸦魔群', en: 'Bale-Fire Raven Flock', trait: 'shield', traitLabelZh: '冥火障纱', traitLabelEn: 'Bale Shroud', counteredByZh: '圣光钟楼（辉光破障 ×1.35）', counteredByEn: 'Sunlit Belfry (×1.35 vs Ward)' },
     },
     presets: [
       { label: '暮钟血月守夜', prompt: '暮钟血月夜，疾行夜魔突袭' },
@@ -392,9 +392,9 @@ export const SKIN_CULTURAL_LEXICONS: Record<SkinId, SkinCulturalLexicon> = {
       footman: { id: 'footman', legacyZh: '步卒', zh: '气垫护盾驳船', en: 'Cushion-Shield Barge', trait: 'shield', traitLabelZh: '气垫偏导盾', traitLabelEn: 'Deflector Cushion', counteredByZh: '防波堤速射炮（速射破盾 ×1.35）', counteredByEn: 'Autocannon (×1.35 vs Shield)' },
       light_cavalry: { id: 'light_cavalry', legacyZh: '轻骑', zh: '涡轮走私快艇', en: 'Turbo Smuggler Skiff', trait: 'speed', traitLabelZh: '涡轮冲滩', traitLabelEn: 'Turbo Foil', counteredByZh: '声呐水雷信标（震波截击 ×1.35）', counteredByEn: 'Sonar Beacon (×1.35 vs Fast)' },
       heavy_armor: { id: 'heavy_armor', legacyZh: '重甲', zh: '重装破冰装甲舰', en: 'Armored Icebreaker', trait: 'armor', traitLabelZh: '破冰钢壳', traitLabelEn: 'Icebreaker Hull', counteredByZh: '岸防重型榴弹炮（榴弹破甲 ×1.35）', counteredByEn: 'Coastal Howitzer (×1.35 vs Armor)' },
-      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '重装破冰装甲舰', en: 'Armored Icebreaker', trait: 'armor', traitLabelZh: '破冰钢壳', traitLabelEn: 'Icebreaker Hull', counteredByZh: '岸防重型榴弹炮（榴弹破甲 ×1.35）', counteredByEn: 'Coastal Howitzer (×1.35 vs Armor)' },
-      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '涡轮走私快艇', en: 'Turbo Smuggler Skiff', trait: 'speed', traitLabelZh: '涡轮冲滩', traitLabelEn: 'Turbo Foil', counteredByZh: '声呐水雷信标（震波截击 ×1.35）', counteredByEn: 'Sonar Beacon (×1.35 vs Fast)' },
-      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '气垫护盾驳船', en: 'Cushion-Shield Barge', trait: 'shield', traitLabelZh: '气垫偏导盾', traitLabelEn: 'Deflector Cushion', counteredByZh: '防波堤速射炮（速射破盾 ×1.35）', counteredByEn: 'Autocannon (×1.35 vs Shield)' },
+      bog_golem: { id: 'bog_golem', legacyZh: '泥沼巨人', zh: '深海重型潜航器', en: 'Abyssal Submersible', trait: 'armor', traitLabelZh: '耐压钛合金壳', traitLabelEn: 'Titanium Pressure Hull', counteredByZh: '岸防重型榴弹炮（榴弹破甲 ×1.35）', counteredByEn: 'Coastal Howitzer (×1.35 vs Armor)' },
+      swamp_frog: { id: 'swamp_frog', legacyZh: '沼泽蛙', zh: '飞鱼水翼突击艇', en: 'Hydrofoil Raider', trait: 'speed', traitLabelZh: '水翼掠浪', traitLabelEn: 'Hydrofoil Skim', counteredByZh: '声呐水雷信标（震波截击 ×1.35）', counteredByEn: 'Sonar Beacon (×1.35 vs Fast)' },
+      miasma_bug: { id: 'miasma_bug', legacyZh: '瘴气虫', zh: '漂流感应水雷群', en: 'Drifting Mine Cluster', trait: 'shield', traitLabelZh: '磁感偏导壳', traitLabelEn: 'Magnetic Shell', counteredByZh: '防波堤速射炮（速射破盾 ×1.35）', counteredByEn: 'Autocannon (×1.35 vs Shield)' },
     },
     presets: [
       { label: '风暴潮夜航拦截', prompt: '海港风暴潮，涡轮走私快艇突袭' },
@@ -563,8 +563,237 @@ export function buildCulturalMappingTable() {
         { id: 'footman', legacy: '步卒', current: lex.enemies.footman.zh, trait: lex.enemies.footman.traitLabelZh, counter: lex.enemies.footman.counteredByZh },
         { id: 'light_cavalry', legacy: '轻骑', current: lex.enemies.light_cavalry.zh, trait: lex.enemies.light_cavalry.traitLabelZh, counter: lex.enemies.light_cavalry.counteredByZh },
         { id: 'heavy_armor', legacy: '重甲', current: lex.enemies.heavy_armor.zh, trait: lex.enemies.heavy_armor.traitLabelZh, counter: lex.enemies.heavy_armor.counteredByZh },
+        { id: 'bog_golem', legacy: '泥沼巨人', current: lex.enemies.bog_golem.zh, trait: lex.enemies.bog_golem.traitLabelZh, counter: lex.enemies.bog_golem.counteredByZh },
+        { id: 'swamp_frog', legacy: '沼泽蛙', current: lex.enemies.swamp_frog.zh, trait: lex.enemies.swamp_frog.traitLabelZh, counter: lex.enemies.swamp_frog.counteredByZh },
+        { id: 'miasma_bug', legacy: '瘴气虫', current: lex.enemies.miasma_bug.zh, trait: lex.enemies.miasma_bug.traitLabelZh, counter: lex.enemies.miasma_bug.counteredByZh },
       ],
     };
   });
+}
+
+export const CAMPAIGN_MAX_LEVEL = 1000;
+export const CAMPAIGN_SKIN_ROTATION: readonly SkinId[] = [
+  'union-atlas-3d',
+  'metropolis-riverside-3d',
+  'gothic-cathedral-3d',
+  'harbor-district-3d',
+];
+
+/** 1000 关递增战役的长路径模板池（14×10 棋盘，8–10 个折点，总长 26–34 格，比初始 22 格更长且无自交） */
+const CAMPAIGN_PATH_TEMPLATES: readonly { x: number; y: number }[][] = [
+  [
+    { x: 0, y: 1 }, { x: 4, y: 1 }, { x: 4, y: 4 }, { x: 1, y: 4 },
+    { x: 1, y: 7 }, { x: 7, y: 7 }, { x: 7, y: 2 }, { x: 11, y: 2 },
+    { x: 11, y: 8 }, { x: 13, y: 8 },
+  ],
+  [
+    { x: 0, y: 2 }, { x: 5, y: 2 }, { x: 5, y: 6 }, { x: 2, y: 6 },
+    { x: 2, y: 8 }, { x: 9, y: 8 }, { x: 9, y: 3 }, { x: 12, y: 3 },
+    { x: 12, y: 7 }, { x: 13, y: 7 },
+  ],
+  [
+    { x: 0, y: 7 }, { x: 3, y: 7 }, { x: 3, y: 2 }, { x: 7, y: 2 },
+    { x: 7, y: 6 }, { x: 10, y: 6 }, { x: 10, y: 1 }, { x: 12, y: 1 },
+    { x: 12, y: 8 }, { x: 13, y: 8 },
+  ],
+  [
+    { x: 0, y: 4 }, { x: 3, y: 4 }, { x: 3, y: 1 }, { x: 8, y: 1 },
+    { x: 8, y: 5 }, { x: 5, y: 5 }, { x: 5, y: 8 }, { x: 11, y: 8 },
+    { x: 11, y: 4 }, { x: 13, y: 4 },
+  ],
+];
+
+function expandCellsSet(path: { x: number; y: number }[]): Set<string> {
+  const out = new Set<string>();
+  if (!path.length) return out;
+  out.add(`${path[0].x},${path[0].y}`);
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
+    let x = a.x, y = a.y;
+    while (x !== b.x || y !== b.y) {
+      x += dx;
+      y += dy;
+      out.add(`${x},${y}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * 生成第 `level` 关（`1 .. 1000`）的战役关卡内容包（大厅 #26188 ⑥⑦⑧）：
+ * - 包含 6 种差异化兵种（护盾巡逻、高速快车、重装主战、微型集群、跃迁飞梭、重型巨像）与 3 座克制塔；
+ * - 严格限制 `base_damage` 上限为 `1..3`（快车/轻型单位 `base_damage = 1`，重甲 `2`，巨像 `3`），快车移速校准为 `52`，彻底根治「打完第一辆小车就没了」；
+ * - 随关卡号 `1 → 1000` 温和递增波次数（`3 → 8` 波）、兵种组合复杂度与敌军耐久，同时保证前 3 关及后续关卡在合理折角布防下稳健可赢、不合理布防会失败。
+ */
+export function generateCampaignPack(
+  level: number,
+  skin?: string | null,
+  lang: 'zh' | 'en' = 'zh',
+  edictId?: EdictOptionSpec['id'] | null,
+  activeAffixes: CrisisAffixSpec['id'][] = [],
+): ContentPack {
+  const lv = Math.max(1, Math.min(CAMPAIGN_MAX_LEVEL, Math.round(level || 1)));
+  const resolvedSkin = skin ? resolveSkinId(skin) : CAMPAIGN_SKIN_ROTATION[(lv - 1) % CAMPAIGN_SKIN_ROTATION.length];
+  const lex = getCulturalLexicon(resolvedSkin);
+  const W = 14, H = 10;
+  const tpl = CAMPAIGN_PATH_TEMPLATES[(lv - 1) % CAMPAIGN_PATH_TEMPLATES.length];
+  const flipY = Math.floor((lv - 1) / CAMPAIGN_PATH_TEMPLATES.length) % 2 === 1;
+  const path = tpl.map((c) => ({ x: c.x, y: flipY ? H - 1 - c.y : c.y }));
+  const onPath = expandCellsSet(path);
+  const buildable_cells: { x: number; y: number }[] = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!onPath.has(`${x},${y}`)) buildable_cells.push({ x, y });
+    }
+  }
+
+  // 难度曲线：第 1 关 1.00x，第 2 关 1.08x，第 3 关 1.16x，至 1000 关平滑对数递增，同时同步提升开局与击杀 CP
+  const prog = (lv - 1) / (CAMPAIGN_MAX_LEVEL - 1);
+  const hpScale = 1 + Math.min(0.32, (lv - 1) * 0.08) + Math.pow(prog, 0.72) * 2.4;
+  const spdScale = 1 + Math.min(0.18, prog * 0.18);
+  const waveCount = Math.min(8, 3 + Math.floor(Math.log2(lv + 1)));
+  const startingGold = Math.min(420, 180 + Math.floor((lv - 1) * 6));
+
+  const basePack: ContentPack = {
+    meta: {
+      theme: lang === 'zh'
+        ? `${lex.worldTitle.zh} · 第 ${lv}/${CAMPAIGN_MAX_LEVEL} 关`
+        : `${lex.worldTitle.en} · Stage ${lv}/${CAMPAIGN_MAX_LEVEL}`,
+      description: lang === 'zh'
+        ? `第 ${lv} 关战役防线：6 兵种协同突袭，终点死守母星方碑（${lex.baseTitle.zh}）`
+        : `Stage ${lv}/${CAMPAIGN_MAX_LEVEL}: 6 enemy classes advancing on ${lex.baseTitle.en}`,
+    },
+    towers: [
+      { id: 'crossbow', display_name: lex.towers.crossbow[lang], cost: 60, damage: 20, range: 2650, interval_ticks: 18, color: '#6FB1FF' },
+      { id: 'fire_brazier', display_name: lex.towers.fire_brazier[lang], cost: 80, damage: 12, range: 2250, interval_ticks: 10, color: '#4DD0E1' },
+      { id: 'catapult', display_name: lex.towers.catapult[lang], cost: 110, damage: 48, range: 3500, interval_ticks: 52, color: '#E8C170' },
+    ],
+    enemies: [
+      { id: 'footman', display_name: lex.enemies.footman[lang], hp: Math.round(105 * hpScale), speed: Math.round(35 * spdScale), base_damage: 1, reward: 14, color: '#C84B4B' },
+      { id: 'light_cavalry', display_name: lex.enemies.light_cavalry[lang], hp: Math.round(64 * hpScale), speed: Math.min(68, Math.round(52 * spdScale)), base_damage: 1, reward: 12, color: '#FF8A65' },
+      { id: 'heavy_armor', display_name: lex.enemies.heavy_armor[lang], hp: Math.round(280 * hpScale), speed: Math.round(24 * spdScale), base_damage: 2, reward: 28, color: '#90A4AE' },
+      { id: 'miasma_bug', display_name: lex.enemies.miasma_bug[lang], hp: Math.round(42 * hpScale), speed: Math.round(44 * spdScale), base_damage: 1, reward: 6, color: '#BA68C8' },
+      { id: 'swamp_frog', display_name: lex.enemies.swamp_frog[lang], hp: Math.round(78 * hpScale), speed: Math.min(64, Math.round(48 * spdScale)), base_damage: 1, reward: 11, color: '#4DB6AC' },
+      { id: 'bog_golem', display_name: lex.enemies.bog_golem[lang], hp: Math.round(360 * hpScale), speed: Math.round(20 * spdScale), base_damage: 3, reward: 35, color: '#7986CB' },
+    ],
+    map: {
+      width: W,
+      height: H,
+      path,
+      buildable_cells,
+      base_hp: 20,
+      starting_gold: startingGold,
+    },
+    waves: Array.from({ length: waveCount }, (_, wi) => {
+      const groups: { enemy_id: string; count: number; interval_ticks: number }[] = [];
+      const extra = Math.min(8, Math.floor((lv - 1) / 4));
+      if (wi === 0) {
+        groups.push({ enemy_id: 'footman', count: 5 + Math.min(4, extra), interval_ticks: 28 });
+        groups.push({ enemy_id: 'miasma_bug', count: 4 + Math.min(4, extra), interval_ticks: 22 });
+      } else if (wi === 1) {
+        groups.push({ enemy_id: 'footman', count: 5 + Math.min(5, extra), interval_ticks: 25 });
+        groups.push({ enemy_id: 'light_cavalry', count: 4 + Math.min(4, extra), interval_ticks: 24 });
+        groups.push({ enemy_id: 'swamp_frog', count: 3 + Math.min(3, extra), interval_ticks: 24 });
+      } else {
+        groups.push({ enemy_id: 'heavy_armor', count: 2 + Math.min(3, Math.floor(wi / 2)), interval_ticks: 45 });
+        groups.push({ enemy_id: 'light_cavalry', count: 4 + Math.min(4, extra), interval_ticks: 22 });
+        if (wi >= 2 || lv >= 2) {
+          groups.push({ enemy_id: 'bog_golem', count: 1 + Math.min(2, Math.floor((lv + wi) / 4)), interval_ticks: 55 });
+        }
+      }
+      return { id: `w${wi + 1}`, groups };
+    }),
+  };
+
+  return localizePackForSkin(basePack, resolvedSkin, lang, edictId, activeAffixes);
+}
+
+export interface Skin3dAssetSpec {
+  skin: SkinId;
+  garrisonDefender: {
+    nameZh: string;
+    nameEn: string;
+    geometry: string;
+    silhouette: string;
+  };
+  turrets3d: {
+    id: string;
+    nameZh: string;
+    nameEn: string;
+    geometry: string;
+  }[];
+  source: string;
+  license: string;
+}
+
+/** 四款皮肤专属 3D 守兵与炮台立体素材清单（含几何规格、来源与许可，大厅 #26188 ⑨） */
+export function getSkin3dAssetManifest(): Skin3dAssetSpec[] {
+  return [
+    {
+      skin: 'union-atlas-3d',
+      garrisonDefender: {
+        nameZh: '星院司仪装甲守卫',
+        nameEn: 'Astral Aegis Sentinel',
+        geometry: '3D 等轴测八棱柱装甲胸甲 + 悬浮星环肩甲 + 观测目镜球顶',
+        silhouette: 'octagonal_prism_sentinel',
+      },
+      turrets3d: [
+        { id: 'crossbow', nameZh: '脉冲棱镜塔', nameEn: 'Pulse Prism Turret', geometry: '3D 双层八角工業台基 + 悬浮旋转红宝石棱镜晶核 + 相位聚焦环' },
+        { id: 'fire_brazier', nameZh: '引力锚定井', nameEn: 'Gravity Anchor Well', geometry: '3D 环状磁约束反应釜 + 三重等轴测引力波导管' },
+        { id: 'catapult', nameZh: '轨道天基炮', nameEn: 'Orbital Rail Cannon', geometry: '3D 重型构成主义斜切炮塔 + 双联平行电磁加速导轨' },
+      ],
+      source: '仓库自研程序化 3D 多面体与等轴测立体构件（src/game/spatialMap.ts draw3dTurretAndGarrison），与 Hikos Skin Studio kits.js 同源色板',
+      license: 'CC0-1.0 / MIT（项目自有原创代码生成，无第三方版权限制）',
+    },
+    {
+      skin: 'metropolis-riverside-3d',
+      garrisonDefender: {
+        nameZh: '市政智控机甲守备员',
+        nameEn: 'Metro Cyber-Watch Operator',
+        geometry: '3D 流线型战术背心立柱 + 青绿全息护目镜 + 无人机通信背包',
+        silhouette: 'cyber_operator_3d',
+      },
+      turrets3d: [
+        { id: 'crossbow', nameZh: '电磁拦阻桩', nameEn: 'EMP Bollard', geometry: '3D 玻璃幕墙六棱柱塔身 + 顶部高压特斯拉电弧线圈环' },
+        { id: 'fire_brazier', nameZh: '声波减速站', nameEn: 'Sonic Suppressor', geometry: '3D 倾角相控阵声学抛物面碟形天线 + 脉冲振子基座' },
+        { id: 'catapult', nameZh: '高能激光矩阵', nameEn: 'Laser Array', geometry: '3D 双塔联动光学棱镜阵列 + 铜金散热鳍片重型转台' },
+      ],
+      source: '仓库自研程序化 3D 多面体与等轴测立体构件（src/game/spatialMap.ts draw3dTurretAndGarrison），与 metropolis.js 同源色板',
+      license: 'CC0-1.0 / MIT（项目自有原创代码生成，无第三方版权限制）',
+    },
+    {
+      skin: 'gothic-cathedral-3d',
+      garrisonDefender: {
+        nameZh: '圣堂守夜审判执事',
+        nameEn: 'Vesper Vigil Arbiter',
+        geometry: '3D 哥特尖拱披风立像 + 琥珀提灯权杖 + 银铸肩章高光',
+        silhouette: 'vesper_arbiter_3d',
+      },
+      turrets3d: [
+        { id: 'crossbow', nameZh: '圣光钟楼', nameEn: 'Sunlit Belfry', geometry: '3D 玄武岩方尖塔身 + 飞扶壁侧翼 + 四棱锥尖顶圣焰钟室' },
+        { id: 'fire_brazier', nameZh: '唱诗共鸣碑', nameEn: 'Choir Resonance Stele', geometry: '3D 玫瑰花窗圆环祭坛 + 八角形圣咏音叉石碑' },
+        { id: 'catapult', nameZh: '净罪重弩炮', nameEn: 'Purging Ballista', geometry: '3D 圣堂重型石砌炮座 + 双翼银铸破魔反曲巨弓臂' },
+      ],
+      source: '仓库自研程序化 3D 多面体与等轴测立体构件（src/game/spatialMap.ts draw3dTurretAndGarrison），与 gothic.js 同源色板',
+      license: 'CC0-1.0 / MIT（项目自有原创代码生成，无第三方版权限制）',
+    },
+    {
+      skin: 'harbor-district-3d',
+      garrisonDefender: {
+        nameZh: '海事防卫装甲水兵',
+        nameEn: 'Admiralty Marine Gunner',
+        geometry: '3D 海事防风重甲躯干 + 黄铜潜望镜护盔 + 港务信标肩灯',
+        silhouette: 'maritime_gunner_3d',
+      },
+      turrets3d: [
+        { id: 'crossbow', nameZh: '防波堤速射炮', nameEn: 'Breakwater Autocannon', geometry: '3D 预制沉箱混凝土台基 + 装甲炮廓 + 双联装穿甲机炮管' },
+        { id: 'fire_brazier', nameZh: '声呐水雷信标', nameEn: 'Sonar Mine Beacon', geometry: '3D 黄铜系泊浮筒塔身 + 旋转海事雷达横杆与声呐脉冲球' },
+        { id: 'catapult', nameZh: '岸防重型榴弹炮', nameEn: 'Coastal Howitzer', geometry: '3D 铆接深海钢装甲炮塔 + 大仰角岸防巨型榴弹炮管' },
+      ],
+      source: '仓库自研程序化 3D 多面体与等轴测立体构件（src/game/spatialMap.ts draw3dTurretAndGarrison），与 harbor.js 同源色板',
+      license: 'CC0-1.0 / MIT（项目自有原创代码生成，无第三方版权限制）',
+    },
+  ];
 }
 

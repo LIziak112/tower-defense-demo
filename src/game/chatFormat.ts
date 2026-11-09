@@ -313,7 +313,7 @@ export function sanitizeLlmPack(input: unknown): RawPack {
           speed_milli_per_tick: clampInt(comp.Movement?.speed_milli_per_tick, G.enemy_speed.min, G.enemy_speed.max, fbEnemy.components.Movement.speed_milli_per_tick),
         },
         PathFollower: {
-          base_damage: clampInt(comp.PathFollower?.base_damage, 1, 20, fbEnemy.components.PathFollower.base_damage),
+          base_damage: clampInt(comp.PathFollower?.base_damage, G.enemy_base_damage.min, G.enemy_base_damage.max, fbEnemy.components.PathFollower.base_damage),
         },
         Reward: {
           gold: clampInt(comp.Reward?.gold, G.enemy_gold.min, G.enemy_gold.max, fbEnemy.components.Reward.gold),

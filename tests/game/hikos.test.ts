@@ -5,14 +5,17 @@ import { createSpatialProjector, getMinionModelKind, parseSpatialMap } from '../
 import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice, sanitizeLlmPack } from '../../src/game/chatFormat';
 import {
   buildCulturalMappingTable,
+  CAMPAIGN_MAX_LEVEL,
   computeCounterPreview,
+  generateCampaignPack,
   getCulturalLexicon,
+  getSkin3dAssetManifest,
   localizePackForSkin,
   replaceAncientTerms,
   SKIN_CULTURAL_LEXICONS,
 } from '../../src/game/culturalThemes';
 import { validatePack } from '../../src/content/validate';
-import { balanceWarnings } from '../../src/content/dryrun';
+import { balanceWarnings, dryRun } from '../../src/content/dryrun';
 import { adviseLocal } from '../../src/advisor/local';
 import { advicePrompt } from '../../src/advisor/prompt';
 import { createBattle } from '../../src/runtime/sim';
@@ -433,5 +436,56 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
     const proj = createSpatialProjector(DEFAULT_PACK, 1440, 856, parseSpatialMap({ skin: 'harbor-district-3d', w: 1440, h: 856 }));
     expect(proj.roadPlan.splitBranchSegments.length).toBeGreaterThanOrEqual(2);
     expect(getCulturalLexicon('harbor-district-3d').routeSplitLabel.zh).toContain('分流');
+  });
+
+  it('大厅 #26188 / #26210：1000 关递增战役、6 兵种、同心环城真实道路拓扑、前 3 关平衡校准与 3D 守兵炮台清单', () => {
+    expect(CAMPAIGN_MAX_LEVEL).toBe(1000);
+    const p1 = generateCampaignPack(1, 'union-atlas-3d', 'zh');
+    const p2 = generateCampaignPack(2, 'metropolis-riverside-3d', 'zh');
+    const p3 = generateCampaignPack(3, 'gothic-cathedral-3d', 'zh');
+    const p1000 = generateCampaignPack(1000, 'harbor-district-3d', 'zh');
+
+    expect(p1.enemies.length).toBeGreaterThanOrEqual(6);
+    expect(p2.enemies.length).toBeGreaterThanOrEqual(6);
+    expect(p3.enemies.length).toBeGreaterThanOrEqual(6);
+    expect(p1000.enemies.length).toBeGreaterThanOrEqual(6);
+    expect(p1000.waves.length).toBeGreaterThan(p1.waves.length);
+    expect(p1000.enemies[0].hp).toBeGreaterThan(p1.enemies[0].hp);
+
+    // base_damage 上限 <= 3 且快车移速 <= 52（第 1 关）
+    expect(Math.max(...p1.enemies.map((e) => e.base_damage))).toBeLessThanOrEqual(3);
+    expect(p1.enemies.find((e) => e.id === 'light_cavalry')?.speed).toBe(52);
+
+    // 前 3 关在合理布防下必胜、不造塔或不合理偏置布防必败
+    for (const pk of [p1, p2, p3]) {
+      expect(dryRun(pk, 'no_towers', 7).result).toBe('lost');
+      expect(dryRun(pk, 'poor_placement', 7).result).toBe('lost');
+      expect(dryRun(pk, 'greedy', 7).result).toBe('won');
+    }
+
+    // 同心环城（gothic-cathedral-3d）真实圆环+放射路网拓扑：折点数 >= 12，终点锚定 home
+    const gothicProj = createSpatialProjector(p3, 1440, 856, parseSpatialMap({
+      skin: 'gothic-cathedral-3d',
+      layout: 'concentric-town',
+      w: 1440,
+      h: 856,
+      azimuth: -2.55,
+      pitch: 0.65,
+      zoom: 1,
+      home: { key: 'home', kind: 'landmark', label: '圣堂主座', x: 720, y: 420 },
+      spawnBuilding: { key: 'belfry', kind: 'entity', label: '外环钟楼门', x: 460, y: 290 },
+    }));
+    expect(gothicProj.waypoints.length).toBeGreaterThanOrEqual(12);
+    expect(gothicProj.roadPlan.endBuilding.key).toBe('home');
+    expect(gothicProj.roadPlan.nativeRatio).toBeGreaterThanOrEqual(0.8);
+
+    // 四款皮肤 3D 炮台与守兵素材清单完整性
+    const manifest = getSkin3dAssetManifest();
+    expect(manifest).toHaveLength(4);
+    for (const m of manifest) {
+      expect(m.turrets3d).toHaveLength(3);
+      expect(m.garrisonDefender.nameZh.length).toBeGreaterThan(2);
+      expect(m.license).toContain('CC0');
+    }
   });
 });
