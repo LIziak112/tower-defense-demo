@@ -49,7 +49,7 @@ export async function runPipelineAsync(
 ): Promise<Summary> {
   try {
     let attempts = 1;
-    onProgress?.({ round: 1, maxRounds, chars: 0, text: '', stage: '军师正在推演第 1 轮关卡设计…', provider: provider.name });
+    onProgress?.({ round: 1, maxRounds, chars: 0, text: '', stage: '军师正在推演第 1 轮战局方案…', provider: provider.name });
     let raw: unknown = await provider.generateContent({
       text,
       onStream: (ev) => onProgress?.({
@@ -57,7 +57,7 @@ export async function runPipelineAsync(
         maxRounds,
         chars: ev.chars ?? (ev.text?.length ?? 0),
         text: ev.text ?? ev.delta ?? '',
-        stage: ev.stage ?? `军师正在流式生成关卡（第 ${attempts}/${maxRounds} 轮）…`,
+        stage: ev.stage ?? `军师正在推演战局阵法（第 ${attempts}/${maxRounds} 轮）…`,
         provider: ev.provider ?? provider.name,
       }),
     });
@@ -69,7 +69,7 @@ export async function runPipelineAsync(
       errors = v.errors;
       if (attempts < maxRounds) {
         const nextRound = attempts + 1;
-        onProgress?.({ round: nextRound, maxRounds, chars: 0, text: '', stage: `发现 ${errors.length} 处数值越界，军师正在第 ${nextRound}/${maxRounds} 轮修正…`, provider: provider.name });
+        onProgress?.({ round: nextRound, maxRounds, chars: 0, text: '', stage: `发现 ${errors.length} 处数值越界，军师正在第 ${nextRound}/${maxRounds} 轮调整…`, provider: provider.name });
         raw = await provider.generateContent({
           text,
           previous: raw as RawPack,
@@ -79,7 +79,7 @@ export async function runPipelineAsync(
             maxRounds,
             chars: ev.chars ?? (ev.text?.length ?? 0),
             text: ev.text ?? ev.delta ?? '',
-            stage: ev.stage ?? `军师正在流式修正关卡（第 ${nextRound}/${maxRounds} 轮）…`,
+            stage: ev.stage ?? `军师正在调整关卡部署（第 ${nextRound}/${maxRounds} 轮）…`,
             provider: ev.provider ?? provider.name,
           }),
         });

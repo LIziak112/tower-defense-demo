@@ -75,21 +75,28 @@ export interface LevelPromptInput {
 export function levelPrompt(input: LevelPromptInput, lang: 'zh' | 'en' = 'zh'): LlmPrompt {
   const g = GUARDRAILS;
   const prefix = formatPersonaPrefix(input.agent, lang);
+  const compactExample: RawPack = {
+    ...input.example,
+    map: {
+      ...input.example.map,
+      buildable_cells: input.example.map.buildable_cells.slice(0, 14),
+    },
+  };
   const system = prefix + (lang === 'zh'
-    ? `你是塔防小游戏的「军师」，负责按玩家一句话设计一张关卡（内容包）。只输出一个 JSON 对象，不要多余文字、不要 markdown 围栏。
+    ? `你是塔防小游戏的「军师」，负责按玩家一句话设计一张关卡（内容包）。只输出一个紧凑单行 JSON 对象，不要多余文字、不要 markdown 围栏、不要换行缩进。
 内容包形状：\n${PACK_SHAPE}
 硬约束（超出会被拒绝）：塔伤害 ${g.tower_damage.min}-${g.tower_damage.max}，塔间隔 ${g.tower_interval_ticks.min}-${g.tower_interval_ticks.max} tick，射程 ${g.tower_range_milli.min}-${g.tower_range_milli.max} milli（1000 = 一格），造价 ${g.tower_cost.min}-${g.tower_cost.max}；敌人血 ${g.enemy_max_health.min}-${g.enemy_max_health.max}，速度 ${g.enemy_speed.min}-${g.enemy_speed.max} milli/tick，赏金 ${g.enemy_gold.min}-${g.enemy_gold.max}；每波敌人总数 ${g.wave_total_enemies.min}-${g.wave_total_enemies.max}，波数 ${g.wave_count.min}-${g.wave_count.max}，路径折点 ${g.path_points.min}-${g.path_points.max}。
-路径相邻折点必须同行或同列、不自交、不出地图；buildable_cells 不能压在路径上、不重复。
+路径相邻折点必须同行或同列、不自交、不出地图；buildable_cells 给 12-16 个紧邻路径的空地坐标即可（不能压在路径上、不重复）。
 Presentation 只能用这些 id：asset_id ∈ ${JSON.stringify(input.assetIds)}；palette_id ∈ ${JSON.stringify(input.paletteIds)}；tileset_id ∈ ${JSON.stringify(input.tilesetIds)}。
-参考示例（合法的内容包，可在它基础上改）：\n${JSON.stringify(input.example)}`
-    : `You design a level (content pack) for a small tower-defense game from the player's one-line brief. Output exactly one JSON object, no prose, no fences.
+参考示例（合法的内容包，可在它基础上改）：\n${JSON.stringify(compactExample)}`
+    : `You design a level (content pack) for a small tower-defense game from the player's one-line brief. Output one compact single-line JSON object, no prose, no fences.
 Pack shape:\n${PACK_SHAPE}
 Hard limits (violations are rejected): tower damage ${g.tower_damage.min}-${g.tower_damage.max}, interval ${g.tower_interval_ticks.min}-${g.tower_interval_ticks.max} ticks, range ${g.tower_range_milli.min}-${g.tower_range_milli.max} milli (1000 = one cell), cost ${g.tower_cost.min}-${g.tower_cost.max}; enemy hp ${g.enemy_max_health.min}-${g.enemy_max_health.max}, speed ${g.enemy_speed.min}-${g.enemy_speed.max} milli/tick, gold ${g.enemy_gold.min}-${g.enemy_gold.max}; enemies per wave ${g.wave_total_enemies.min}-${g.wave_total_enemies.max}, waves ${g.wave_count.min}-${g.wave_count.max}, path points ${g.path_points.min}-${g.path_points.max}.
-Adjacent path points share a row or column, the path never self-intersects or leaves the grid; buildable_cells are off-path and unique.
+Adjacent path points share a row or column, the path never self-intersects or leaves the grid; buildable_cells should list 12-16 off-path cells adjacent to the path.
 Presentation ids: asset_id ∈ ${JSON.stringify(input.assetIds)}; palette_id ∈ ${JSON.stringify(input.paletteIds)}; tileset_id ∈ ${JSON.stringify(input.tilesetIds)}.
-Reference (a valid pack you may adapt):\n${JSON.stringify(input.example)}`);
+Reference (a valid pack you may adapt):\n${JSON.stringify(compactExample)}`);
   const user = input.previous && input.errors?.length
     ? `${lang === 'zh' ? '上一版没通过校验，按错误改好再给完整 JSON。错误：' : 'The previous pack failed validation; fix these and return the full JSON. Errors:'}\n${JSON.stringify(input.errors.slice(0, 12).map((e) => ({ code: e.code, path: e.path, message: e.message })))}\n${lang === 'zh' ? '上一版：' : 'Previous:'}\n${JSON.stringify(input.previous)}`
     : `${lang === 'zh' ? '玩家的要求：' : 'Player brief:'}${input.text}`;
-  return { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: 2500 };
+  return { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: 3500 };
 }

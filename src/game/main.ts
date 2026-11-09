@@ -1,6 +1,7 @@
 // D1 presenter: fixed 30 tick/s accumulator loop; rendering only reads state, all rules in runtime.
 // Hikos 嵌入（hikos.ts / skins.ts）：URL 参数 skin/accent/bg/ink/theme/lang 决定配色与文案，postMessage v1 与宿主握手（td:ready / td:state / td:exit）。
-// 军师（src/advisor/，任务 fb4d93bc）：?advisor=local|host|<url> 选通道；会话每 tick 前后各一个钩子；采纳只产出 build 命令走同一条校验；卡片见 advisorCard.ts。
+// 军师（src/advisor/，任务 fb4d93bc / d9ad7e7a / 94bbcebe / 997eeae6）：?advisor=local|host|<url> 选通道；会话每 tick 前后各一个钩子；
+// 采纳只产出 build 命令走同一条校验；卡片见 advisorCard.ts，聊天式自然语言格式化见 chatFormat.ts。
 import { createBattle, step, checksum, TICKS_PER_SECOND, CELL } from '../runtime/index';
 import type { BattleState, Command, GameEvent } from '../runtime/index';
 import { DEFAULT_PACK } from '../content/default';
@@ -16,6 +17,7 @@ import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type Adv
 import { slotCell } from '../advisor/snapshot';
 import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
 import { createSpatialProjector, drawSpatialBattlefield, type SpatialProjector } from './spatialMap';
+import { cleanTechTerms, escHtml, extractNaturalAdvisorSpeech } from './chatFormat';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
@@ -51,7 +53,7 @@ let currentTheme = legacyPalette ?? (hikosMode ? 'hikos' : 'default');
 let theme: Palette = legacyPalette ? PALETTES[legacyPalette] : hikosMode ? paletteForContext(bridge.context) : PALETTES.default;
 let lang = bridge.context.lang;
 
-// 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切；军师议事（D2 大厅）暂只有中文
+// 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切
 const STR = {
   zh: { base: '基地', gold: '金币', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…' },
   en: { base: 'Base', gold: 'Gold', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…' },
@@ -147,8 +149,13 @@ function applyPalette() {
   r.setProperty('--td-hair', theme.hair ?? '#555');
   r.setProperty('--td-accent', theme.accent ?? '#ffd36a');
   r.setProperty('--td-danger', theme.danger ?? '#ff9a8a');
-  document.documentElement.dataset.theme = hikosMode ? bridge.context.theme : 'night';
+  r.setProperty('--td-ok', theme.ok ?? '#338a72');
+  const effectiveTheme = hikosMode ? bridge.context.theme : 'night';
+  document.documentElement.dataset.theme = effectiveTheme;
+  // 关键修复（#25648 ⑤）：同步设置 iframe :root 的 color-scheme 与宿主页面一致，防止 WebKit/Blink 在夜色皮肤下给 iframe 强制绘制 #ffffff 不透明白底
+  r.colorScheme = effectiveTheme === 'night' ? 'dark' : 'light';
   document.documentElement.dataset.insitu = isInsitu() ? 'true' : 'false';
+  if (bridge.context.skin) document.documentElement.dataset.skin = bridge.context.skin;
   document.documentElement.lang = lang;
 }
 function applyContext(c: HostContext) {
@@ -460,9 +467,7 @@ function draw() {
 
   for (const tw of s.towers) {
     const def = pack.towers.find((d) => d.id === tw.def)!;
-    // Hikos 皮肤：塔身用建筑主体色、塔顶 / 炮口用 accent（接入说明 §3.4）；内置配色沿用内容包里的塔色
     ctx.fillStyle = theme.tower ?? def.color ?? '#fff'; ctx.globalAlpha = tw.life === 'pending' ? 0.5 : 1;
-    // 带有阴影的基座
     ctx.beginPath();
     ctx.roundRect(tw.cx * PX + 10, tw.cy * PX + 10, PX - 20, PX - 20, 6);
     ctx.fill();
@@ -471,7 +476,6 @@ function draw() {
       ctx.beginPath(); ctx.roundRect(tw.cx * PX + 10, tw.cy * PX + 10, PX - 20, PX - 20, 6); ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    // 绘制简易枪管
     ctx.fillStyle = theme.tower ? (def.color ?? theme.accent ?? theme.base) : theme.bg;
     ctx.beginPath(); ctx.arc(tw.cx * PX + PX / 2, tw.cy * PX + PX / 2, 6, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = theme.text; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
@@ -486,12 +490,10 @@ function draw() {
     ctx.moveTo(x, y - PX * 0.25); ctx.lineTo(x + PX * 0.2, y + PX * 0.2); ctx.lineTo(x - PX * 0.2, y + PX * 0.2);
     ctx.fill();
 
-    // 血条
     ctx.fillStyle = theme.ink ? 'rgba(0,0,0,.45)' : '#000'; ctx.fillRect(x - 12, y - 22, 24, 4);
     ctx.fillStyle = theme.ok ?? '#7CFC7C'; ctx.fillRect(x - 12, y - 22, 24 * Math.max(0, e.hp) / def.hp, 4);
   }
 
-  // 粒子
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
     ctx.fillStyle = p.color;
@@ -537,11 +539,11 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-// ---- D2 lobby: describe -> 军师（流式输出 + 频道在岗智能体扮演） -> validate -> dry-run -> summary card -> 开始 / 再改改 ----
+// ---- D2 lobby: 皮肤化紧凑「军师议事」对话框 + 聊天式自然语言 AI 输出（去除原始 JSON 与「流式」技术词） ----
 const lobby = document.createElement('div');
 lobby.id = 'lobby';
 root.append(lobby);
-function esc(tx: string) { return tx.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!)); }
+const esc = escHtml;
 const safeAvatar = (u?: string) => !!u && (/^data:image\/(svg\+xml|png|jpeg|webp|gif)[;,]/i.test(u) || /^https?:\/\//i.test(u) || u.startsWith('/'));
 let designing = false;   // 关卡设计军师（LLM）出活中：按钮置灰，防连点
 let lastSum: Summary | undefined;
@@ -552,14 +554,16 @@ function activeAdvisorAgent(): AdvisorAgent | null {
 
 function lobbyIdentityHtml(sum?: Summary): string {
   const ag = activeAdvisorAgent();
-  const who = sum?.provider ?? (llmLevelProvider ? `${llmLevelProvider.name}（超时退 ${provider.name}）` : provider.name);
+  const rawWho = sum?.provider ?? (llmLevelProvider ? llmLevelProvider.name : provider.name);
+  const who = cleanTechTerms(rawWho, lang);
   const avHtml = ag?.name
     ? (safeAvatar(ag.avatar)
         ? `<img class="lobby-adv-av" src="${esc(ag.avatar!)}" alt="${esc(ag.name)}">`
         : `<span class="lobby-adv-av lobby-adv-glyph"${ag.color ? ` style="--adv-c:${esc(ag.color)}"` : ''}>${esc([...ag.name][0] ?? '军')}</span>`)
-    : '';
-  const personaHtml = ag?.persona ? `<p class="lobby-persona" id="lobby-persona">${esc(ag.persona)}</p>` : '';
-  return `<div id="lobby-head"><h3>${avHtml}<span>军师议事</span> <small id="lobby-who">${esc(who)}</small></h3>${personaHtml}</div>`;
+    : `<span class="lobby-adv-av lobby-adv-glyph">军</span>`;
+  const personaAttr = ag?.persona ? ` title="${esc(ag.persona)}"` : '';
+  const personaHtml = ag?.persona ? `<p class="lobby-persona" id="lobby-persona" hidden>${esc(ag.persona)}</p>` : '';
+  return `<div id="lobby-head"${personaAttr}><h3>${avHtml}<span class="lobby-title-text">军师议事</span> <small id="lobby-who">${esc(who)}</small></h3>${personaHtml}</div>`;
 }
 
 function refreshLobbyIdentity() {
@@ -570,39 +574,25 @@ function refreshLobbyIdentity() {
   if (wrap.firstElementChild) head.replaceWith(wrap.firstElementChild);
 }
 
-function extractStreamPreview(rawText: string): string {
-  if (!rawText) return '';
-  const themeMatch = rawText.match(/"theme"\s*:\s*"([^"]+)"/);
-  const descMatch = rawText.match(/"description"\s*:\s*"([^"]+)"/);
-  const parts: string[] = [];
-  if (themeMatch?.[1]) parts.push(`主题：「${themeMatch[1]}」`);
-  if (descMatch?.[1]) parts.push(`构想：${descMatch[1]}`);
-  return parts.join(' · ');
-}
-
 function renderLobbyStream(p: LevelStreamProgress) {
   const out = lobby.querySelector('#summary');
   if (!out) return;
   let box = out.querySelector('.stream-box') as HTMLElement | null;
   if (!box) {
-    out.innerHTML = `<div class="stream-box" id="lobby-stream"><p class="stream-stage" id="stream-stage"></p><p class="stream-parsed" id="stream-parsed"></p><pre class="stream-log" id="stream-log"></pre></div>`;
+    out.innerHTML = `<div class="stream-box lobby-chat-bubble" id="lobby-stream"><div class="stream-head"><span class="adv-pulse-dot"></span><p class="stream-stage" id="stream-stage"></p></div><div class="stream-parsed chat-md-body" id="stream-parsed"></div></div>`;
     box = out.querySelector('.stream-box') as HTMLElement | null;
   }
   const stageEl = out.querySelector('#stream-stage');
   const parsedEl = out.querySelector('#stream-parsed');
-  const logEl = out.querySelector('#stream-log');
   const ag = activeAdvisorAgent();
-  const actor = ag?.name ? `军师「${ag.name}」` : (p.provider || '军师');
+  const actor = ag?.name ? `军师「${ag.name}」` : cleanTechTerms(p.provider || '军师', lang);
+  const stageText = cleanTechTerms(p.stage || '正在推演阵法与兵力部署…', lang);
   if (stageEl) {
-    stageEl.textContent = `${actor} · ${p.stage}${p.chars > 0 ? `（已流式输出 ${p.chars} 字）` : ''}`;
+    stageEl.textContent = `${actor} · ${stageText}`;
   }
   if (parsedEl) {
-    const preview = extractStreamPreview(p.text);
-    parsedEl.textContent = preview;
-    (parsedEl as HTMLElement).style.display = preview ? 'block' : 'none';
-  }
-  if (logEl && p.text) {
-    logEl.textContent = p.text.length > 360 ? '…' + p.text.slice(-360) : p.text;
+    // 复用聊天式自然语言提取器：将增量内容渲染成通顺的军师自然语言战策段落，绝不展示原始 JSON
+    parsedEl.innerHTML = extractNaturalAdvisorSpeech(p.text, stageText, lang);
   }
 }
 
@@ -610,24 +600,47 @@ function showLobby(sum?: Summary, text = '') {
   inLobby = true; lobby.style.display = 'block'; advisorBox.style.display = 'none';
   lastSum = sum;
   lobby.innerHTML = `<div class="card">${lobbyIdentityHtml(sum)}
-  <textarea id="desc" rows="2" placeholder="描述你想要的战局，例如：长坂坡雨夜，人海战术">${esc(text)}</textarea>
-  <div class="row"><button id="gen"${designing ? ' disabled' : ''}>${designing ? '军师出题中…' : '让军师设计'}</button><button id="td-direct-play" type="button">直接原位布防</button></div>
+  <textarea id="desc" rows="2" placeholder="输入战局构想，例如：长坂坡雨夜，轻骑突袭">${esc(text)}</textarea>
+  <div class="lobby-presets"><button type="button" class="preset-chip" data-preset="长坂坡雨夜，轻骑突袭">长坂坡雨夜</button><button type="button" class="preset-chip" data-preset="水路栈道伏击，人海战术">水路伏击</button><button type="button" class="preset-chip" data-preset="重甲铁骑攻城，高赏金">重甲攻城</button></div>
+  <div class="row"><button id="gen" class="primary-btn"${designing ? ' disabled' : ''}>${designing ? '军师推演中…' : '让军师设计'}</button><button id="td-direct-play" class="ghost-btn" type="button">直接原位布防</button></div>
   <div id="summary"></div></div>`;
+
+  lobby.querySelectorAll('.preset-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const preset = (chip as HTMLElement).dataset.preset || '';
+      const area = lobby.querySelector('#desc') as HTMLTextAreaElement | null;
+      if (area && preset) area.value = preset;
+    });
+  });
+
   lobby.querySelector('#td-direct-play')?.addEventListener('click', () => enterBattleInSitu());
   const out = lobby.querySelector('#summary')!;
   if (designing && !sum) {
     const ag = activeAdvisorAgent();
-    const actor = ag?.name ? `军师「${ag.name}」` : (llmLevelProvider?.name ?? '军师');
-    out.innerHTML = `<div class="stream-box" id="lobby-stream"><p class="stream-stage" id="stream-stage">${esc(actor)} · 正在连接并流式推演关卡…</p><p class="stream-parsed" id="stream-parsed" style="display:none"></p><pre class="stream-log" id="stream-log"></pre></div>`;
+    const actor = ag?.name ? `军师「${ag.name}」` : cleanTechTerms(llmLevelProvider?.name ?? '军师', lang);
+    out.innerHTML = `<div class="stream-box lobby-chat-bubble" id="lobby-stream"><div class="stream-head"><span class="adv-pulse-dot"></span><p class="stream-stage" id="stream-stage">${esc(actor)} · 正在勘察地形并推演阵法…</p></div><div class="stream-parsed chat-md-body" id="stream-parsed"><p class="chat-md-p">正在结合当前地图地势编排兵种与防线…</p></div></div>`;
   } else if (sum) {
-    const dr = sum.dryrun.map((d) => `${d.bot === 'greedy' ? '贪心放塔' : '不放塔'}：${d.result === 'won' ? '胜' : d.result === 'lost' ? '负' : '超时'}（基地剩 ${d.base_hp}，漏 ${d.leaks}）`).join('；');
-    out.innerHTML = `<p class="echo">${esc(sum.echo)}</p>
-    ${sum.note ? `<p class="warn">${esc(sum.note)}</p>` : ''}
-    <p>塔：${esc(sum.towers.join('、'))}<br>怪：${esc(sum.enemies.join('、'))}<br>波次：${sum.waves.map((w, i) => `${i + 1}(${w.total})`).join(' ')}</p>
-    <p class="dry">预演：${esc(dr)}</p>
-    ${sum.warnings.map((w) => `<p class="warn">⚠ ${esc(w.message)}</p>`).join('')}
-    ${sum.errors.slice(0, 5).map((e) => `<p class="err">✗ ${esc(e.message)}（${esc(e.path)}）</p>`).join('')}
-    <div class="row"><button id="go">开始</button><button id="again">再改改</button></div>`;
+    const ag = activeAdvisorAgent();
+    const speaker = ag?.name ? `${ag.name}${ag.title ? `（${ag.title}）` : ''}` : cleanTechTerms(sum.provider, lang);
+    const cleanNote = sum.note ? cleanTechTerms(sum.note, lang) : '';
+    const greedyRun = sum.dryrun.find((d) => d.bot === 'greedy');
+    const simLine = greedyRun
+      ? `我已在沙盘推演过此阵：若在折角要冲合理布设防线，可稳守母星（预计基地余量 ${greedyRun.base_hp}，仅漏 ${greedyRun.leaks} 骑）。`
+      : '';
+    out.innerHTML = `<div class="lobby-chat-bubble result-bubble">
+      <div class="chat-msg-head"><strong>${esc(speaker)}</strong><span>阵法成稿</span></div>
+      <p class="echo">${esc(cleanTechTerms(sum.echo, lang))}</p>
+      ${simLine ? `<p class="dry">${esc(simLine)}</p>` : ''}
+      <div class="lobby-pack-grid">
+        <div><span class="meta-k">守军器械</span><span class="meta-v">${esc(sum.towers.join(' · '))}</span></div>
+        <div><span class="meta-k">敌军先锋</span><span class="meta-v">${esc(sum.enemies.join(' · '))}</span></div>
+        <div><span class="meta-k">攻势编组</span><span class="meta-v">共 ${sum.waves.length} 波（${sum.waves.map((w, i) => `W${i + 1}:${w.total}骑`).join(' / ')}）</span></div>
+      </div>
+      ${cleanNote ? `<p class="warn">${esc(cleanNote)}</p>` : ''}
+      ${sum.warnings.map((w) => `<p class="warn">⚠ ${esc(w.message)}</p>`).join('')}
+      ${sum.errors.slice(0, 5).map((e) => `<p class="err">✗ ${esc(e.message)}（${esc(e.path)}）</p>`).join('')}
+    </div>
+    <div class="row action-row"><button id="go" class="primary-btn">开始布防</button><button id="again" class="ghost-btn">重新推演</button></div>`;
     out.querySelector('#go')!.addEventListener('click', () => startWith(sum.pack));
     out.querySelector('#again')!.addEventListener('click', () => (lobby.querySelector('#desc') as HTMLTextAreaElement).focus());
   }
@@ -637,8 +650,9 @@ function showLobby(sum?: Summary, text = '') {
   });
   reportState();
 }
-/** 关卡设计：有通道就走真 LLM（支持 SSE 流式进展反馈；失败整条退本地模板军师并在卡上说明），没有就同步走 Mock。
- *  注意：先复位忙碌标志 designing（Je = false）再调用 showLobby（He()）重绘，结果渲染后按钮恢复可点、不再挂「军师出题中…」。 */
+
+/** 关卡设计：有通道就走真 LLM（支持实时进展反馈；失败整条退本地模板并在卡上说明），没有就同步走 Mock。
+ *  注意：先复位忙碌标志 designing 再调用 showLobby 重绘，结果渲染后按钮恢复可点、不再挂「军师推演中…」。 */
 async function design(tx: string) {
   if (designing) return;
   if (!llmLevelProvider) { showLobby(runPipeline(provider, tx), tx); return; }
