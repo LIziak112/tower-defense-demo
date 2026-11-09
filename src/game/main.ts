@@ -6,13 +6,13 @@ import type { BattleState, Command, GameEvent } from '../runtime/index';
 import { DEFAULT_PACK } from '../content/default';
 import { PALETTES, type Palette } from './palettes';
 import { MockProvider } from '../ai/mock';
-import { runPipeline, runPipelineAsync, type Summary } from '../ai/pipeline';
+import { runPipeline, runPipelineAsync, type LevelStreamProgress, type Summary } from '../ai/pipeline';
 import { LlmContentProvider } from '../ai/llm';
 import type { ContentPack } from '../runtime/index';
 import { expandPath } from '../content/validate';
 import { createHostBridge, type GameState, type HostContext } from './hikos';
 import { paletteForContext } from './skins';
-import { AdvisorSession, HostChannel, selectChannel, type AdvisorView } from '../advisor/index';
+import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type AdvisorView } from '../advisor/index';
 import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
 
 const params = new URLSearchParams(location.search);
@@ -29,7 +29,14 @@ const legacyPalette = [params.get('palette'), params.get('theme')].find((k) => k
 // ?debug 时把解析后的 query 与收到的 hikos:* 消息挂在 window.__q / window.__msgs：宿主侧 tools/addons/test-arcade.cjs 对真游戏跑协议断言的读点
 const hostLog: Record<string, unknown>[] = [];
 const advisorReplyCbs: ((m: Record<string, unknown>) => void)[] = [];
-const bridge = createHostBridge(window, { onContext: applyContext, onVisibility: setHostVisible, onAdvisorReply: (m) => { for (const cb of advisorReplyCbs) cb(m); }, onAny: (m) => { if (DEBUG) hostLog.push(m); } });
+const advisorStreamCbs: ((m: Record<string, unknown>) => void)[] = [];
+const bridge = createHostBridge(window, {
+  onContext: applyContext,
+  onVisibility: setHostVisible,
+  onAdvisorReply: (m) => { for (const cb of advisorReplyCbs) cb(m); },
+  onAdvisorStream: (m) => { for (const cb of advisorStreamCbs) cb(m); },
+  onAny: (m) => { if (DEBUG) hostLog.push(m); },
+});
 if (DEBUG) { (window as any).__q = Object.fromEntries(params); (window as any).__msgs = hostLog; }
 const hikosMode = bridge.embedded || params.has('skin') || params.has('accent');
 let currentTheme = legacyPalette ?? (hikosMode ? 'hikos' : 'default');
@@ -47,7 +54,7 @@ const t = (k: keyof typeof STR.zh) => STR[lang][k];
 let hostChannel: HostChannel | null = null;
 const advisorSel = selectChannel({
   search: location.search, embedded: bridge.embedded,
-  makeHost: () => (hostChannel = new HostChannel((m) => bridge.send(m), (cb) => advisorReplyCbs.push(cb))),
+  makeHost: () => (hostChannel = new HostChannel((m) => bridge.send(m), (cb) => advisorReplyCbs.push(cb), '频道智能体军师', () => Date.now(), (cb) => advisorStreamCbs.push(cb))),
 });
 const session = new AdvisorSession({ channel: advisorSel.channel, lang, tactical: !params.has('notactical'), onChange: () => scheduleCard() });
 const llmLevelProvider = advisorSel.channel ? new LlmContentProvider(advisorSel.channel, { lang }) : null;
@@ -112,10 +119,16 @@ function applyPalette() {
 function applyContext(c: HostContext) {
   lang = c.lang;
   session.lang = c.lang;
+  if (llmLevelProvider) llmLevelProvider.lang = c.lang;
+  const agent: AdvisorAgent | null = c.advisor?.agent ?? null;
+  hostChannel?.setAgent(agent);
+  session.setAgent(agent);
+  llmLevelProvider?.setAgent(agent);
   // 宿主 context 一到就定军师可用性：没配（enabled:false）或老宿主（没有 advisor 字段）→ 不白等截止，秒切本地；排队中的请求随之放行 / 作废
   hostChannel?.setAvailable(c.advisor?.enabled === true);
   if (!legacyPalette) { theme = paletteForContext(c); currentTheme = 'hikos'; }
   applyPalette();
+  if (inLobby) refreshLobbyIdentity();
   renderHud();
   scheduleCard();
 }
@@ -394,21 +407,88 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-// ---- D2 lobby: describe -> Mock 军师 -> validate -> dry-run -> summary card -> 开始 / 再改改 ----
+// ---- D2 lobby: describe -> 军师（流式输出 + 频道在岗智能体扮演） -> validate -> dry-run -> summary card -> 开始 / 再改改 ----
 const lobby = document.createElement('div');
 lobby.id = 'lobby';
 root.append(lobby);
-function esc(tx: string) { return tx.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!)); }
+function esc(tx: string) { return tx.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!)); }
+const safeAvatar = (u?: string) => !!u && (/^data:image\/(svg\+xml|png|jpeg|webp|gif)[;,]/i.test(u) || /^https?:\/\//i.test(u) || u.startsWith('/'));
 let designing = false;   // 关卡设计军师（LLM）出活中：按钮置灰，防连点
+let lastSum: Summary | undefined;
+
+function activeAdvisorAgent(): AdvisorAgent | null {
+  return session.agent ?? hostChannel?.agent ?? null;
+}
+
+function lobbyIdentityHtml(sum?: Summary): string {
+  const ag = activeAdvisorAgent();
+  const who = sum?.provider ?? (llmLevelProvider ? `${llmLevelProvider.name}（超时退 ${provider.name}）` : provider.name);
+  const avHtml = ag?.name
+    ? (safeAvatar(ag.avatar)
+        ? `<img class="lobby-adv-av" src="${esc(ag.avatar!)}" alt="${esc(ag.name)}">`
+        : `<span class="lobby-adv-av lobby-adv-glyph"${ag.color ? ` style="--adv-c:${esc(ag.color)}"` : ''}>${esc([...ag.name][0] ?? '军')}</span>`)
+    : '';
+  const personaHtml = ag?.persona ? `<p class="lobby-persona" id="lobby-persona">${esc(ag.persona)}</p>` : '';
+  return `<div id="lobby-head"><h3>${avHtml}<span>军师议事</span> <small id="lobby-who">${esc(who)}</small></h3>${personaHtml}</div>`;
+}
+
+function refreshLobbyIdentity() {
+  const head = lobby.querySelector('#lobby-head');
+  if (!head) return;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = lobbyIdentityHtml(lastSum);
+  if (wrap.firstElementChild) head.replaceWith(wrap.firstElementChild);
+}
+
+function extractStreamPreview(rawText: string): string {
+  if (!rawText) return '';
+  const themeMatch = rawText.match(/"theme"\s*:\s*"([^"]+)"/);
+  const descMatch = rawText.match(/"description"\s*:\s*"([^"]+)"/);
+  const parts: string[] = [];
+  if (themeMatch?.[1]) parts.push(`主题：「${themeMatch[1]}」`);
+  if (descMatch?.[1]) parts.push(`构想：${descMatch[1]}`);
+  return parts.join(' · ');
+}
+
+function renderLobbyStream(p: LevelStreamProgress) {
+  const out = lobby.querySelector('#summary');
+  if (!out) return;
+  let box = out.querySelector('.stream-box') as HTMLElement | null;
+  if (!box) {
+    out.innerHTML = `<div class="stream-box" id="lobby-stream"><p class="stream-stage" id="stream-stage"></p><p class="stream-parsed" id="stream-parsed"></p><pre class="stream-log" id="stream-log"></pre></div>`;
+    box = out.querySelector('.stream-box') as HTMLElement | null;
+  }
+  const stageEl = out.querySelector('#stream-stage');
+  const parsedEl = out.querySelector('#stream-parsed');
+  const logEl = out.querySelector('#stream-log');
+  const ag = activeAdvisorAgent();
+  const actor = ag?.name ? `军师「${ag.name}」` : (p.provider || '军师');
+  if (stageEl) {
+    stageEl.textContent = `${actor} · ${p.stage}${p.chars > 0 ? `（已流式输出 ${p.chars} 字）` : ''}`;
+  }
+  if (parsedEl) {
+    const preview = extractStreamPreview(p.text);
+    parsedEl.textContent = preview;
+    (parsedEl as HTMLElement).style.display = preview ? 'block' : 'none';
+  }
+  if (logEl && p.text) {
+    logEl.textContent = p.text.length > 360 ? '…' + p.text.slice(-360) : p.text;
+  }
+}
+
 function showLobby(sum?: Summary, text = '') {
   inLobby = true; lobby.style.display = 'block'; advisorBox.style.display = 'none';
-  const who = sum?.provider ?? (llmLevelProvider ? `${llmLevelProvider.name}（超时退 ${provider.name}）` : provider.name);
-  lobby.innerHTML = `<div class="card"><h3>军师议事 <small>${esc(who)}</small></h3>
+  lastSum = sum;
+  lobby.innerHTML = `<div class="card">${lobbyIdentityHtml(sum)}
   <textarea id="desc" rows="2" placeholder="描述你想要的战局，例如：长坂坡雨夜，人海战术">${esc(text)}</textarea>
   <div class="row"><button id="gen"${designing ? ' disabled' : ''}>${designing ? '军师出题中…' : '让军师设计'}</button></div>
   <div id="summary"></div></div>`;
   const out = lobby.querySelector('#summary')!;
-  if (sum) {
+  if (designing && !sum) {
+    const ag = activeAdvisorAgent();
+    const actor = ag?.name ? `军师「${ag.name}」` : (llmLevelProvider?.name ?? '军师');
+    out.innerHTML = `<div class="stream-box" id="lobby-stream"><p class="stream-stage" id="stream-stage">${esc(actor)} · 正在连接并流式推演关卡…</p><p class="stream-parsed" id="stream-parsed" style="display:none"></p><pre class="stream-log" id="stream-log"></pre></div>`;
+  } else if (sum) {
     const dr = sum.dryrun.map((d) => `${d.bot === 'greedy' ? '贪心放塔' : '不放塔'}：${d.result === 'won' ? '胜' : d.result === 'lost' ? '负' : '超时'}（基地剩 ${d.base_hp}，漏 ${d.leaks}）`).join('；');
     out.innerHTML = `<p class="echo">${esc(sum.echo)}</p>
     ${sum.note ? `<p class="warn">${esc(sum.note)}</p>` : ''}
@@ -426,19 +506,32 @@ function showLobby(sum?: Summary, text = '') {
   });
   reportState();
 }
-/** 关卡设计：有通道就走真 LLM（失败整条退本地模板军师并在卡上说明），没有就同步走 Mock */
+/** 关卡设计：有通道就走真 LLM（支持 SSE 流式进展反馈；失败整条退本地模板军师并在卡上说明），没有就同步走 Mock。
+ *  注意：先复位忙碌标志 designing（Je = false）再调用 showLobby（He()）重绘，结果渲染后按钮恢复可点、不再挂「军师出题中…」。 */
 async function design(tx: string) {
   if (designing) return;
   if (!llmLevelProvider) { showLobby(runPipeline(provider, tx), tx); return; }
   designing = true; showLobby(undefined, tx);
-  try { showLobby(await runPipelineAsync(llmLevelProvider, tx, 3, provider), tx); }
-  finally { designing = false; }
+  let sum: Summary | undefined;
+  try {
+    sum = await runPipelineAsync(llmLevelProvider, tx, 3, provider, (p) => {
+      if (designing) renderLobbyStream(p);
+    });
+  } finally {
+    designing = false;
+  }
+  showLobby(sum, tx);
 }
 let revenging = false;
 async function revenge() {
   if (revenging) return;
   revenging = true; renderHud();
-  try { await design(session.debrief(state)); } finally { revenging = false; }
+  try {
+    await design(session.debrief(state));
+  } finally {
+    revenging = false;
+    renderHud();
+  }
 }
 function startWith(p: ContentPack) {
   pack = p;

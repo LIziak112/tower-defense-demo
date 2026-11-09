@@ -40,6 +40,25 @@ describe('hikos:context 合并（§1.6，字段只增不改）', () => {
     expect(contextFromMessage('garbage', base)).toBe(base);
     expect(contextFromMessage({ theme: 'x', accent: 'nope' }, base)).toMatchObject({ theme: 'day', accent: null });
   });
+  it('advisor.agent 携带频道在岗智能体姓名、头衔、头像与人设提示词，且后续消息缺省保留', () => {
+    const c1 = contextFromMessage({
+      type: 'hikos:context',
+      v: 1,
+      advisor: {
+        enabled: true,
+        provider: 'hikos',
+        agent: { name: '姜尚', title: '太公', avatar: 'data:image/svg+xml,<svg/>', color: '356d73', persona: '奇正相生，稳守反击。' },
+      },
+    }, base);
+    expect(c1.advisor).toEqual({
+      enabled: true,
+      provider: 'hikos',
+      agent: { name: '姜尚', title: '太公', avatar: 'data:image/svg+xml,<svg/>', color: '#356d73', persona: '奇正相生，稳守反击。' },
+    });
+    const c2 = contextFromMessage({ type: 'hikos:context', v: 1, advisor: { enabled: false, provider: null } }, c1);
+    expect(c2.advisor?.enabled).toBe(false);
+    expect(c2.advisor?.agent?.name).toBe('姜尚');
+  });
 });
 
 describe('宿主源（§1.6 源校验）', () => {

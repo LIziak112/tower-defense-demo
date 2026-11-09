@@ -126,6 +126,27 @@ export function parseAdvice(raw: unknown): ParseResult {
 
 // ---------------------------------------------------------------- 传输层（核心 ⇄ 宿主代理 / 开发代理）
 export interface LlmMessage { role: 'system' | 'user' | 'assistant'; content: string }
+
+/** 扮演军师的频道在岗智能体元数据（由宿主从当前频道在岗智能体状态中选定并经 hikos:context / td:advisor:request 传递） */
+export interface AdvisorAgent {
+  id?: string;
+  name: string;
+  title?: string;
+  avatar?: string;
+  color?: string;
+  persona?: string;
+}
+
+/** 流式增量事件（SSE delta → 宿主 hikos:advisor:stream → 游戏通道 onStream） */
+export interface AdvisorStreamEvent {
+  reqId: string;
+  delta?: string;
+  text?: string;
+  chars?: number;
+  stage?: string;
+  provider?: string;
+}
+
 export interface AdvisorRequest {
   v: 1;
   reqId: string;
@@ -134,19 +155,26 @@ export interface AdvisorRequest {
   stateVersion: number;
   /** 代理方可用于限额 / 审计；只含 Snapshot（level 请求没有） */
   snapshot?: Snapshot;
+  /** 是否启用 SSE 流式输出（可选，宿主与服务端据此走流式增量 + 首包/空闲超时） */
+  stream?: boolean;
+  /** 当前扮演军师的频道智能体信息（姓名、头像、人设提示词） */
+  agent?: AdvisorAgent;
   /** 给 OpenAI 兼容端点的 messages；代理方只加凭据和 response_format，不改内容 */
   llm: { messages: LlmMessage[]; max_tokens: number; json: true };
 }
 export type AdvisorReply =
-  | { reqId: string; ok: true; payload: unknown; provider?: string; latencyMs?: number }
-  | { reqId: string; ok: false; error: { code: string; message?: string }; provider?: string; latencyMs?: number };
+  | { reqId: string; ok: true; payload: unknown; provider?: string; latencyMs?: number; agent?: AdvisorAgent }
+  | { reqId: string; ok: false; error: { code: string; message?: string }; provider?: string; latencyMs?: number; agent?: AdvisorAgent };
 
-/** 一条通道：发请求、收回包（回包异步到达，由会话按 reqId 配对；迟到 / 重复都在会话层判） */
+/** 一条通道：发请求、收回包（回包异步到达，由会话按 reqId 配对；迟到 / 重复都在会话层判）；可选支持 onStream 接收流式增量 */
 export interface AdvisorChannel {
   readonly name: string;
   readonly kind: 'host' | 'http' | 'scripted';
+  readonly agent?: AdvisorAgent | null;
+  setAgent?(agent: AdvisorAgent | null): void;
   post(req: AdvisorRequest): void;
   onReply(cb: (reply: AdvisorReply) => void): void;
+  onStream?(cb: (ev: AdvisorStreamEvent) => void): void;
 }
 
 export function isAdvisorReply(v: unknown): v is AdvisorReply {
@@ -156,4 +184,10 @@ export function isAdvisorReply(v: unknown): v is AdvisorReply {
   if (m.ok === true) return 'payload' in m;
   if (m.ok === false) return !!m.error && typeof m.error === 'object';
   return false;
+}
+
+export function isAdvisorStreamEvent(v: unknown): v is AdvisorStreamEvent {
+  if (!v || typeof v !== 'object') return false;
+  const m = v as Record<string, unknown>;
+  return typeof m.reqId === 'string' && m.reqId.length > 0;
 }

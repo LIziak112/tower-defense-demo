@@ -6,7 +6,7 @@ import { isGambitId } from '../runtime/gambit';
 import { adviseLocal, LOCAL_ADVISOR_NAME } from './local';
 import { advicePrompt } from './prompt';
 import { buildSnapshot, slotCell } from './snapshot';
-import { LIMITS, parseAdvice, type Advice, type AdviceKind, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type Reject, type Snapshot } from './types';
+import { LIMITS, parseAdvice, type Advice, type AdviceKind, type AdvisorAgent, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type AdvisorStreamEvent, type Reject, type Snapshot } from './types';
 
 export type Lang = 'zh' | 'en';
 export type Source = 'llm' | 'local';
@@ -30,9 +30,9 @@ export interface BetRecord { wave: number; predicted: number; actual: number; re
 export interface LogEntry { t: number; tick: number; ev: 'req' | 'reply' | 'drop' | 'present' | 'adopt' | 'outcome' | 'bet' | 'gambit' | 'timeout' | 'error'; reqId?: string; kind?: string; code?: string; detail?: string }
 
 export interface AdvisorView {
-  provider: { name: string; kind: AdvisorChannel['kind'] | 'local'; channel: string | null };
+  provider: { name: string; kind: AdvisorChannel['kind'] | 'local'; channel: string | null; agent?: AdvisorAgent | null };
   status: 'idle' | 'thinking' | 'ready' | 'late';
-  thinking: { reqId: string; kind: AdviceKind; sinceMs: number; deadlineMs: number } | null;
+  thinking: { reqId: string; kind: AdviceKind; sinceMs: number; deadlineMs: number; streamText?: string; streamChars?: number } | null;
   notice: string | null;
   /** 最近一次押注结算的那句话（常驻到下一次结算；不被新建议覆盖） */
   betLine: string | null;
@@ -58,7 +58,7 @@ export interface SessionOptions {
   deadlines?: Partial<{ nextWave: number; tactical: number }>;
 }
 
-interface Inflight { reqId: string; kind: Exclude<AdviceKind, 'level'>; stateVersion: number; wave: number; phaseStartTick: number; startedAt: number; deadlineMs: number; timer: unknown }
+interface Inflight { reqId: string; kind: Exclude<AdviceKind, 'level'>; stateVersion: number; wave: number; phaseStartTick: number; startedAt: number; deadlineMs: number; timer: unknown; streamText?: string; streamChars?: number }
 
 const STR = {
   zh: { thinking: '军师思考中…', late: '军师迟到，这条不等了。', timeoutLocal: '军师迟到，先用本地建议。', offline: '军师没回音，先用本地建议。', badShape: '军师的话不成句，先用本地建议。', stale: '军师的建议过期了，丢弃。', noTransport: '未接军师，用本地建议。', superseded: '战局已变，上一条建议作废。',
@@ -102,6 +102,7 @@ export class AdvisorSession {
   private pendingCmds: Command[] = [];
   private log: LogEntry[] = [];
   private stats = { requests: 0, replies: 0, fallbacks: 0, drops: 0, adopted: 0 };
+  agent: AdvisorAgent | null = null;
 
   constructor(opts: SessionOptions) {
     this.channel = opts.channel;
@@ -113,6 +114,12 @@ export class AdvisorSession {
     this.tacticalEnabled = opts.tactical ?? true;
     this.deadlines = { nextWave: opts.deadlines?.nextWave ?? LIMITS.nextWaveDeadlineMs, tactical: opts.deadlines?.tactical ?? LIMITS.tacticalDeadlineMs };
     this.channel?.onReply((r) => this.onReply(r));
+    this.channel?.onStream?.((ev) => this.onStream(ev));
+  }
+
+  setAgent(agent: AdvisorAgent | null) {
+    this.agent = agent;
+    this.emit();
   }
 
   // ---------------------------------------------------------------- 生命周期：新战局 / 每 tick
@@ -198,13 +205,30 @@ export class AdvisorSession {
     inflight.timer = this.setTimer(() => this.onTimeout(reqId), deadlineMs);
     this.inflight = inflight;
     this.status = 'thinking';
-    const req: AdvisorRequest = { v: 1, reqId, kind, deadlineMs, stateVersion: snapshot.stateVersion, snapshot, llm: { ...advicePrompt(kind, snapshot, this.lang), json: true } };
+    const activeAgent = this.agent ?? this.channel?.agent ?? null;
+    const req: AdvisorRequest = {
+      v: 1, reqId, kind, deadlineMs, stateVersion: snapshot.stateVersion, snapshot,
+      ...(activeAgent ? { agent: activeAgent } : {}),
+      llm: { ...advicePrompt(kind, snapshot, this.lang, activeAgent), json: true },
+    };
     try { this.channel.post(req); } catch (e) {
       this.push('error', { reqId, code: 'TRANSPORT', detail: e instanceof Error ? e.message : String(e) });
       this.clearTimer(inflight.timer);
       this.inflight = null;
       this.fail(inflight, 'TRANSPORT');
     }
+  }
+
+  private onStream(ev: AdvisorStreamEvent) {
+    if (!this.inflight || this.inflight.reqId !== ev.reqId) return;
+    const req = this.inflight;
+    // 流式输出空闲超时续期：收到增量说明模型正在持续输出，重置定时器
+    this.clearTimer(req.timer);
+    req.timer = this.setTimer(() => this.onTimeout(req.reqId), req.deadlineMs);
+    const delta = ev.delta ?? '';
+    req.streamText = ev.text ?? ((req.streamText ?? '') + delta);
+    req.streamChars = ev.chars ?? req.streamText.length;
+    this.emit();
   }
 
   private onReply(reply: AdvisorReply) {
@@ -372,10 +396,25 @@ export class AdvisorSession {
     const state = this.state;
     const offerId = this.current?.advice.gambit?.id;
     const taken = state?.gambit && state.gambit.wave === state.wave_index ? state.gambit : null;
+    const activeAgent = this.agent ?? this.channel?.agent ?? null;
+    const providerName = activeAgent?.name
+      ? (activeAgent.title ? `${activeAgent.name} · ${activeAgent.title}` : activeAgent.name)
+      : (this.channel ? this.channel.name : LOCAL_ADVISOR_NAME[this.lang]);
     return {
-      provider: this.channel ? { name: this.channel.name, kind: this.channel.kind, channel: this.channel.kind } : { name: LOCAL_ADVISOR_NAME[this.lang], kind: 'local', channel: null },
+      provider: this.channel
+        ? { name: providerName, kind: this.channel.kind, channel: this.channel.kind, ...(activeAgent ? { agent: activeAgent } : {}) }
+        : { name: LOCAL_ADVISOR_NAME[this.lang], kind: 'local', channel: null, ...(activeAgent ? { agent: activeAgent } : {}) },
       status: this.inflight ? 'thinking' : this.status,
-      thinking: this.inflight ? { reqId: this.inflight.reqId, kind: this.inflight.kind, sinceMs: this.now() - this.inflight.startedAt, deadlineMs: this.inflight.deadlineMs } : null,
+      thinking: this.inflight
+        ? {
+            reqId: this.inflight.reqId,
+            kind: this.inflight.kind,
+            sinceMs: this.now() - this.inflight.startedAt,
+            deadlineMs: this.inflight.deadlineMs,
+            ...(this.inflight.streamText !== undefined ? { streamText: this.inflight.streamText } : {}),
+            ...(this.inflight.streamChars !== undefined ? { streamChars: this.inflight.streamChars } : {}),
+          }
+        : null,
       notice: this.notice,
       betLine: this.betLine,
       current: this.current,
