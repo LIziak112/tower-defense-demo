@@ -2,8 +2,8 @@ import { test, expect, type Page, type Frame } from '@playwright/test';
 
 // 军师 E2E：独立页（本地模板 / HTTP 代理）与嵌入页（模拟 Hikos 宿主按脚本回包）。
 // 宿主只做「代发」：收到 td:advisor:request 原样记下，按模式回 hikos:advisor:reply；不懂提示词、不改快照。
-// 模式：ok = 立刻回合法建议；slow = 8 s 后才回（超过 6 s 截止）；bad = 下一波回不成形、波内回过期；off = context 里 advisor.enabled=false 且永不回。
-type HostMode = 'ok' | 'slow' | 'bad' | 'off';
+// hold 由测试决定何时回包。bad 的下一波建议回不成形，波内建议同样由测试放行。
+type HostMode = 'ok' | 'hold' | 'bad' | 'off';
 const HOST_PATH = '/__advisor-host.html';
 const GAME_QUERY = 'v=1&skin=union-atlas-3d&accent=a72e25&bg=f2ebdd&ink=393e38&theme=day&lang=zh&skiplobby';
 const hostHtml = (mode: HostMode) => `<!DOCTYPE html><html><body style="margin:0">
@@ -29,8 +29,8 @@ const hostHtml = (mode: HostMode) => `<!DOCTYPE html><html><body style="margin:0
     if (m.type !== 'td:advisor:request') return;
     window.__reqs.push(m);
     if (MODE === 'ok') reply(m, advice(m));
-    else if (MODE === 'slow') setTimeout(() => reply(m, advice(m)), 8000);
-    else if (MODE === 'bad') reply(m, m.kind === 'next-wave' ? { foo: 'bar' } : Object.assign(advice(m), { basedOn: 0 }));
+    else if (MODE === 'bad' && m.kind === 'next-wave') reply(m, { foo: 'bar' });
+    else if (MODE === 'hold' || MODE === 'bad') window.__replyHeld = () => reply(m, advice(m));
   });
   frame.src = './?${GAME_QUERY}';
 </script></body></html>`;
@@ -57,7 +57,7 @@ test('独立页 ?advisor=local：卡片出本地建议与押注；采纳只落 b
   const card = page.locator('#advisor');
   await expect(card).toHaveAttribute('data-source', 'local');
   await expect(card).toHaveAttribute('data-provider', 'local');
-  await expect(page.locator('#adv-badge')).toContainText('本地模板');
+  await expect(page.locator('#adv-badge')).toHaveText('沙盘推演');
   expect(await page.evaluate(() => (window as any).__advisor.mode)).toBe('local');
   await expect(page.locator('#advisor .adv-opt')).not.toHaveCount(0);
   await expect(page.locator('#advisor .adv-bet')).toContainText('军师押');
@@ -105,7 +105,7 @@ test('嵌入 · 宿主代理正常回包：请求契约（v1 / 提示词 / 最�
   const game = await openHost(page, 'ok');
   await expect.poll(() => reqs(page), { timeout: 15_000 }).not.toHaveLength(0);
   const r = (await reqs(page))[0];
-  expect(r).toMatchObject({ type: 'td:advisor:request', v: 1, kind: 'next-wave', deadlineMs: 6000 });
+  expect(r).toMatchObject({ type: 'td:advisor:request', v: 1, kind: 'next-wave', deadlineMs: 12_000 });
   expect(r.reqId).toMatch(/^r\d+$/);
   expect(r.llm.json).toBe(true);
   expect(r.llm.messages.map((m) => m.role)).toEqual(['system', 'user']);
@@ -120,8 +120,7 @@ test('嵌入 · 宿主代理正常回包：请求契约（v1 / 提示词 / 最�
   const card = game.locator('#advisor');
   await expect(card).toHaveAttribute('data-source', 'llm');
   await expect(card).toHaveAttribute('data-provider', 'host');
-  await expect(game.locator('#adv-badge')).toHaveClass(/llm/);
-  await expect(game.locator('#adv-badge')).toContainText('mock-llm');
+  await expect(game.locator('#adv-badge')).toHaveText('实时献策');
   await expect(game.locator('#advisor .adv-say')).toContainText('宿主军师在此');
   await expect(game.locator('#advisor .adv-opt[data-option="a"] b')).toContainText('宿主回包');
   await expect(game.locator('#advisor .adv-opt[data-option="b"] button')).toBeDisabled();   // 0 步的选项没得采纳
@@ -135,34 +134,32 @@ test('嵌入 · 宿主代理正常回包：请求契约（v1 / 提示词 / 最�
   await expect.poll(async () => (await st(game)).towers).toBe(before.towers + 1);
   await page.screenshot({ path: 'docs/screens/advisor-host-llm.png' });
 
-  // 波内每 4 s 一问即时指令（2.5 s 截止），宿主秒回 → 上墙
+  // 波内即时指令由宿主立即回包，建议上墙
   await game.click('#start-wave');
   await expect.poll(async () => (await reqs(page)).filter((x) => x.kind === 'tactical').length, { timeout: 30_000 }).toBeGreaterThan(0);
   const tac = (await reqs(page)).find((x) => x.kind === 'tactical')!;
-  expect(tac.deadlineMs).toBe(2500);
+  expect(tac.deadlineMs).toBe(6_000);
   expect(tac.snapshot.phase).toBe('wave');
   await expect.poll(async () => (await view(game)).log.filter((l: { ev: string; kind?: string; code?: string }) => l.ev === 'present' && l.kind === 'tactical' && l.code === 'LLM').length).toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });
 
-test('嵌入 · 宿主 8 s 才回（§5-1）：6 s 截止后本地兜底、迟到回包记 LATE；在飞请求不拖慢 tick（§5-5 口径）', async ({ page }) => {
-  const game = await openHost(page, 'slow');
+test('嵌入 · 宿主超过截止时间才回：本地兜底、迟到回包记 LATE；请求在途时 tick 继续推进', async ({ page }) => {
+  const game = await openHost(page, 'hold');
   await expect.poll(() => reqs(page), { timeout: 15_000 }).not.toHaveLength(0);
+  const request = (await reqs(page))[0];
   const card = game.locator('#advisor');
   await expect(card).toHaveAttribute('data-status', 'thinking');
-  await expect(game.locator('#adv-badge')).toContainText('思考中');
-  const t0 = Date.now();
-  await expect(card).toHaveAttribute('data-source', 'local', { timeout: 9_000 });
-  const waited = Date.now() - t0;
-  expect(waited).toBeLessThan(8_000);   // 是 6 s 截止兜的底，不是等到 8 s 回包
+  await expect(game.locator('#adv-badge')).toHaveText('推演战局中…');
+  await expect(card).toHaveAttribute('data-source', 'local', { timeout: request.deadlineMs + 3_000 });
   const v = await view(game);
   expect(v.current.reason).toBe('TIMEOUT');
-  expect(v.notice).toContain('迟到');
   expect(v.current.advice.options.length).toBeGreaterThan(0);
-  await expect(game.locator('#adv-badge')).toContainText('TIMEOUT');
-  const reqId = (await reqs(page))[0].reqId;
+  await expect(game.locator('#advisor .adv-notice')).toContainText('迟到');
+  const { reqId } = request;
+  await page.evaluate(() => (window as any).__replyHeld());
   await expect.poll(async () => (await view(game)).log.filter((l: { ev: string; code?: string; reqId?: string }) => l.ev === 'drop' && l.code === 'LATE' && l.reqId === reqId).length, { timeout: 6_000 }).toBe(1);
-  expect((await view(game)).current.reqId).toBe(reqId);   // 迟到回包没有顶掉已上墙的本地建议
+  expect((await view(game)).current).toMatchObject({ reqId, source: 'local', reason: 'TIMEOUT' });
   expect((await view(game)).stats).toMatchObject({ requests: 1, replies: 0, fallbacks: 1, drops: 1 });
 
   // 开波：波内即时请求一直在飞（宿主慢），tick 速率仍是 30/s（2 s 里 60 tick，容差 10%）
@@ -172,7 +169,8 @@ test('嵌入 · 宿主 8 s 才回（§5-1）：6 s 截止后本地兜底、迟�
   const a = await st(game);
   await page.waitForTimeout(2000);
   const b = await st(game);
-  if (b.phase === 'wave') expect(Math.abs(b.tick - a.tick - 60)).toBeLessThanOrEqual(6);
+  expect(b.phase).toBe('wave');
+  expect(Math.abs(b.tick - a.tick - 60)).toBeLessThanOrEqual(6);
   await expect.poll(async () => (await view(game)).log.filter((l: { ev: string; kind?: string; code?: string }) => l.ev === 'drop' && l.kind === 'tactical' && l.code === 'TIMEOUT').length, { timeout: 10_000 }).toBeGreaterThan(0);
 });
 
@@ -182,12 +180,16 @@ test('嵌入 · 宿主回不成形 / 过期（§5-2 §5-3）：形状错 → 本
   await expect(card).toHaveAttribute('data-source', 'local', { timeout: 15_000 });
   const v = await view(game);
   expect(v.current.reason).toBe('BAD_SHAPE');
-  expect(v.notice).toContain('不成句');
   expect(v.log.some((l: { ev: string; code?: string }) => l.ev === 'error' && l.code === 'BAD_SHAPE')).toBe(true);
-  await expect(game.locator('#adv-badge')).toContainText('BAD_SHAPE');
+  await expect(game.locator('#advisor .adv-notice')).toContainText('不成句');
 
   const towers0 = (await st(game)).towers;
   await game.click('#start-wave');
+  await expect.poll(async () => (await reqs(page)).some((req) => req.kind === 'tactical')).toBe(true);
+  const tactical = (await reqs(page)).find((req) => req.kind === 'tactical')!;
+  // 用发出时的快照回包，等当前战局比快照多走 60 tick 后再放行。
+  await expect.poll(async () => (await st(game)).tick).toBeGreaterThan(tactical.stateVersion + 60);
+  await page.evaluate(() => (window as any).__replyHeld());
   await expect.poll(async () => (await view(game)).log.filter((l: { ev: string; code?: string }) => l.ev === 'drop' && l.code === 'STALE').length, { timeout: 30_000 }).toBeGreaterThan(0);
   expect((await st(game)).towers).toBe(towers0);
   expect((await view(game)).stats.adopted).toBe(0);
@@ -218,7 +220,8 @@ test('独立页 ?advisor=/path：HTTP 代理通道（开发代理口径），回
   expect(await page.evaluate(() => (window as any).__advisor.mode)).toBe('http');
   await expect(page.locator('#advisor')).toHaveAttribute('data-source', 'llm', { timeout: 15_000 });
   await expect(page.locator('#advisor')).toHaveAttribute('data-provider', 'http');
-  await expect(page.locator('#adv-badge')).toContainText('route-llm');
+  await expect(page.locator('#adv-badge')).toHaveText('实时献策');
+  expect((await view(page)).current.provider).toBe('route-llm');
   await expect(page.locator('#advisor .adv-opt[data-option="a"] b')).toContainText('代理回包');
   expect(posted).toHaveLength(1);
   expect(posted[0]).toMatchObject({ v: 1, kind: 'next-wave' });
@@ -254,10 +257,8 @@ test('嵌入 · 频道智能体扮演 + 大厅流式出题 + Pn() 按钮复位�
     if (m.type === 'td:advisor:request') {
       window.__reqs.push(m);
       if (m.kind === 'level') {
-        setTimeout(() => send({ type: 'hikos:advisor:stream', v: 1, reqId: m.reqId, delta: '{"meta":{"theme":"渭水奇阵","description":"太公亲布雨夜伏击阵"}', chars: 52, provider: 'deepseek-flash' }), 60);
-        setTimeout(() => send({ type: 'hikos:advisor:stream', v: 1, reqId: m.reqId, delta: ',"towers":[...],"waves":[...]}', chars: 128, provider: 'deepseek-flash' }), 140);
-        // 第 3 轮或故意返回非法包让其回退以同时验证回退卡与按钮复位
-        setTimeout(() => send({ type: 'hikos:advisor:reply', v: 1, reqId: m.reqId, ok: false, error: { code: 'UPSTREAM', message: 'stream test done' }, provider: 'deepseek-flash', latencyMs: 220 }), 260);
+        send({ type: 'hikos:advisor:stream', v: 1, reqId: m.reqId, delta: '{"meta":{"theme":"渭水奇阵","description":"太公亲布雨夜伏击阵"}', provider: 'deepseek-flash' });
+        window.__finishLevel = () => send({ type: 'hikos:advisor:reply', v: 1, reqId: m.reqId, ok: false, error: { code: 'UPSTREAM', message: 'stream test done' }, provider: 'deepseek-flash' });
       } else {
         const slot = (m.snapshot.slots || []).find((s) => s.open);
         send({
@@ -282,23 +283,26 @@ test('嵌入 · 频道智能体扮演 + 大厅流式出题 + Pn() 按钮复位�
   await expect(game.locator('#lobby-persona')).toContainText('善布奇门阵法');
   await expect(game.locator('#lobby .lobby-adv-av')).toBeVisible();
 
-  // 2) 点击「让军师设计」期间，流式进展实时出现在 #lobby-stream
+  // 2) 在最终回包前，流式内容已作为自然语言展示
   await game.click('#gen');
-  await expect(game.locator('#lobby-stream')).toBeVisible();
-  await expect(game.locator('#stream-stage')).toContainText('已流式输出');
-  await expect(game.locator('#stream-parsed')).toContainText('渭水奇阵');
+  await expect(game.locator('#gen')).toBeDisabled();
+  await expect(game.locator('#stream-parsed')).toContainText('战役主题：渭水奇阵');
+  await expect(game.locator('#stream-parsed')).not.toContainText('"meta"');
+  await page.evaluate(() => (window as any).__finishLevel());
 
-  // 3) 结果渲染出来后，#gen 按钮必须恢复为可点击的「让军师设计」，不再挂着 disabled 的「军师出题中…」
+  // 3) 结果渲染后，按钮恢复为可点击的「让军师设计」
   await expect(game.locator('#go')).toBeVisible({ timeout: 5000 });
   const genBtn = game.locator('#gen');
   await expect(genBtn).toBeEnabled();
   await expect(genBtn).toHaveText('让军师设计');
 
-  // 4) 进入战局后，底部 HUD #advisor 卡片同样署名「姜尚（太公兵法）」并展示头像与人设，且请求携带 agent 与人设提示词
+  // 4) 进入战局后，HUD 仍展示智能体署名和头像，请求携带 agent 与人设提示词
   await game.click('#go');
-  await expect(game.locator('#advisor .adv-title')).toContainText('军师 · 姜尚（太公兵法）');
+  await expect(game.locator('#advisor .adv-title')).toHaveText('姜尚 · 太公兵法');
   await expect(game.locator('#advisor .adv-avatar')).toBeVisible();
-  await expect(game.locator('#adv-badge')).toContainText('姜尚 · LLM · deepseek-flash');
+  await expect(game.locator('#advisor')).toHaveAttribute('data-source', 'llm');
+  await expect(game.locator('#adv-badge')).toHaveText('实时献策');
+  expect((await view(game)).current.provider).toBe('deepseek-flash');
   const allReqs = await reqs(page);
   expect(allReqs.length).toBeGreaterThanOrEqual(2);
   expect((allReqs[0] as any).agent?.name).toBe('姜尚');
