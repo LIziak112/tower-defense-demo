@@ -1346,7 +1346,7 @@ export function drawSpatialBattlefield(
     const def = pack.towers.find((d) => d.id === tw.def)!;
     const center = proj.cellToScreen(tw.cx + 0.5, tw.cy + 0.5);
     // 闲置塔身呼吸缩放
-    const isIdle = !opts.shots?.some(s => s.towerId === tw.iid);
+    const isIdle = !opts.shots?.some(s => s.towerIid === tw.iid);
     const breatheScale = isIdle ? 1 + Math.sin(opts.now * 0.0025) * 0.03 : 1;
     ctx.save();
     ctx.translate(center.x, center.y);
@@ -1600,12 +1600,8 @@ export function drawSpatialBattlefield(
     ctx.save();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
     ctx.beginPath();
-    const isFlying = def.tags?.includes('flying');
-    if (isFlying) {
-      ctx.ellipse(pt.x + 24, pt.y + 24, r * 0.8, r * 0.8 * 0.6, 0, 0, Math.PI * 2);
-    } else {
-      ctx.ellipse(pt.x, pt.y + r * 0.35, r, r * 0.6, 0, 0, Math.PI * 2);
-    }
+    // EnemyDef 无 tags 字段，统一按地面单位投影软阴影
+    ctx.ellipse(pt.x, pt.y + r * 0.35, r, r * 0.6, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     
