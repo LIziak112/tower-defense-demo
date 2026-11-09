@@ -1,0 +1,449 @@
+{
+ "meta": {
+  "theme": "长坂坡·雨夜",
+  "description": "前两波步卒热身，第 3 波轻骑突袭，第 5 波重甲压阵"
+ },
+ "towers": [
+  {
+   "id": "crossbow",
+   "display_name": "弩车",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 15,
+     "range_milli": 2500,
+     "interval_ticks": 20
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 60
+    },
+    "Presentation": {
+     "asset_id": "tower_crossbow_01",
+     "palette_id": "ink_night"
+    }
+   }
+  },
+  {
+   "id": "catapult",
+   "display_name": "投石车",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 45,
+     "range_milli": 3500,
+     "interval_ticks": 60
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 110
+    },
+    "Presentation": {
+     "asset_id": "tower_catapult_01",
+     "palette_id": "ink_night"
+    }
+   }
+  },
+  {
+   "id": "fire_brazier",
+   "display_name": "火油台",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 4,
+     "range_milli": 1500,
+     "interval_ticks": 6
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 80
+    },
+    "Presentation": {
+     "asset_id": "tower_fire_01",
+     "palette_id": "ink_night"
+    }
+   }
+  }
+ ],
+ "enemies": [
+  {
+   "id": "footman",
+   "display_name": "步卒",
+   "components": {
+    "Health": {
+     "max": 120
+    },
+    "Movement": {
+     "speed_milli_per_tick": 35
+    },
+    "PathFollower": {
+     "base_damage": 1
+    },
+    "Reward": {
+     "gold": 12
+    },
+    "Presentation": {
+     "asset_id": "enemy_foot_01",
+     "palette_id": "ink_night"
+    }
+   }
+  },
+  {
+   "id": "light_cavalry",
+   "display_name": "轻骑",
+   "components": {
+    "Health": {
+     "max": 70
+    },
+    "Movement": {
+     "speed_milli_per_tick": 70
+    },
+    "PathFollower": {
+     "base_damage": 1
+    },
+    "Reward": {
+     "gold": 10
+    },
+    "Presentation": {
+     "asset_id": "enemy_cavalry_01",
+     "palette_id": "ink_night"
+    }
+   }
+  },
+  {
+   "id": "heavy_armor",
+   "display_name": "重甲",
+   "components": {
+    "Health": {
+     "max": 420
+    },
+    "Movement": {
+     "speed_milli_per_tick": 22
+    },
+    "PathFollower": {
+     "base_damage": 3
+    },
+    "Reward": {
+     "gold": 30
+    },
+    "Presentation": {
+     "asset_id": "enemy_heavy_01",
+     "palette_id": "ink_night"
+    }
+   }
+  }
+ ],
+ "map": {
+  "grid": {
+   "width": 12,
+   "height": 9
+  },
+  "path": [
+   [
+    0,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    4,
+    3
+   ],
+   [
+    9,
+    3
+   ],
+   [
+    9,
+    6
+   ],
+   [
+    3,
+    6
+   ],
+   [
+    3,
+    8
+   ],
+   [
+    11,
+    8
+   ]
+  ],
+  "buildable_cells": [
+   [
+    0,
+    0
+   ],
+   [
+    1,
+    0
+   ],
+   [
+    2,
+    0
+   ],
+   [
+    3,
+    0
+   ],
+   [
+    4,
+    0
+   ],
+   [
+    5,
+    0
+   ],
+   [
+    5,
+    1
+   ],
+   [
+    0,
+    2
+   ],
+   [
+    1,
+    2
+   ],
+   [
+    2,
+    2
+   ],
+   [
+    3,
+    2
+   ],
+   [
+    5,
+    2
+   ],
+   [
+    6,
+    2
+   ],
+   [
+    7,
+    2
+   ],
+   [
+    8,
+    2
+   ],
+   [
+    9,
+    2
+   ],
+   [
+    10,
+    2
+   ],
+   [
+    3,
+    3
+   ],
+   [
+    10,
+    3
+   ],
+   [
+    3,
+    4
+   ],
+   [
+    4,
+    4
+   ],
+   [
+    5,
+    4
+   ],
+   [
+    6,
+    4
+   ],
+   [
+    7,
+    4
+   ],
+   [
+    8,
+    4
+   ],
+   [
+    10,
+    4
+   ],
+   [
+    2,
+    5
+   ],
+   [
+    3,
+    5
+   ],
+   [
+    4,
+    5
+   ],
+   [
+    5,
+    5
+   ],
+   [
+    6,
+    5
+   ],
+   [
+    7,
+    5
+   ],
+   [
+    8,
+    5
+   ],
+   [
+    10,
+    5
+   ],
+   [
+    2,
+    6
+   ],
+   [
+    10,
+    6
+   ],
+   [
+    2,
+    7
+   ],
+   [
+    4,
+    7
+   ],
+   [
+    5,
+    7
+   ],
+   [
+    6,
+    7
+   ],
+   [
+    7,
+    7
+   ],
+   [
+    8,
+    7
+   ],
+   [
+    9,
+    7
+   ],
+   [
+    10,
+    7
+   ],
+   [
+    11,
+    7
+   ],
+   [
+    2,
+    8
+   ]
+  ],
+  "base": {
+   "max_health": 20
+  },
+  "starting_gold": 150,
+  "presentation": {
+   "tileset_id": "plain_night",
+   "palette_id": "ink_night"
+  }
+ },
+ "waves": [
+  {
+   "id": "w1",
+   "groups": [
+    {
+     "enemy_id": "footman",
+     "count": 6,
+     "interval_ticks": 30
+    }
+   ]
+  },
+  {
+   "id": "w2",
+   "groups": [
+    {
+     "enemy_id": "footman",
+     "count": 10,
+     "interval_ticks": 24
+    }
+   ]
+  },
+  {
+   "id": "w3_cavalry_raid",
+   "groups": [
+    {
+     "enemy_id": "footman",
+     "count": 4,
+     "interval_ticks": 24
+    },
+    {
+     "enemy_id": "light_cavalry",
+     "count": 10,
+     "interval_ticks": 14
+    }
+   ]
+  },
+  {
+   "id": "w4",
+   "groups": [
+    {
+     "enemy_id": "footman",
+     "count": 10,
+     "interval_ticks": 20
+    },
+    {
+     "enemy_id": "light_cavalry",
+     "count": 6,
+     "interval_ticks": 16
+    }
+   ]
+  },
+  {
+   "id": "w5_heavy",
+   "groups": [
+    {
+     "enemy_id": "heavy_armor",
+     "count": 5,
+     "interval_ticks": 50
+    },
+    {
+     "enemy_id": "footman",
+     "count": 10,
+     "interval_ticks": 18
+    }
+   ]
+  }
+ ]
+}

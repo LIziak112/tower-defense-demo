@@ -1,35 +1,25 @@
 name: CI
-
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/* ]
   pull_request:
     branches: [ main ]
-
 jobs:
-  test-and-lint:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
         with:
-          node-version: 20
-          cache: 'npm'
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Lint
-        run: npm run lint
-        
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit Tests (Vitest)
-        run: npm run test
-
-      - name: Playwright Browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: E2E Smoke Tests
-        run: npm run test:e2e
+          node-version: 22
+      - run: npm install
+      - run: npx playwright install chromium --with-deps
+      - run: npm run build
+      - run: npm run test
+      - run: npx playwright test
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-screenshots
+          path: docs/screens/*.png

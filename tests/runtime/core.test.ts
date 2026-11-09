@@ -88,7 +88,7 @@ describe('runtime D1', () => {
   });
 
   it('5 本 tick 生成的怪下一 tick 才移动；本 tick 建的塔下一 tick 才攻击', () => {
-    const s = createBattle(DEFAULT_PACK, 1);
+    let s = createBattle(DEFAULT_PACK, 1);
     let r = step(s, [{ type: 'build', tower_id: 'crossbow', x: 1, y: 0 }, { type: 'start_wave' }]);
     const e = r.state.enemies[0];
     expect(e.life).toBe('pending');
