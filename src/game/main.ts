@@ -13,7 +13,9 @@ import { expandPath } from '../content/validate';
 import { createHostBridge, type GameState, type HostContext } from './hikos';
 import { paletteForContext } from './skins';
 import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type AdvisorView } from '../advisor/index';
+import { slotCell } from '../advisor/snapshot';
 import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
+import { createSpatialProjector, drawSpatialBattlefield, type SpatialProjector } from './spatialMap';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
@@ -30,15 +32,21 @@ const legacyPalette = [params.get('palette'), params.get('theme')].find((k) => k
 const hostLog: Record<string, unknown>[] = [];
 const advisorReplyCbs: ((m: Record<string, unknown>) => void)[] = [];
 const advisorStreamCbs: ((m: Record<string, unknown>) => void)[] = [];
+const explicitInsitu = params.get('insitu');
 const bridge = createHostBridge(window, {
   onContext: applyContext,
   onVisibility: setHostVisible,
+  onMap: () => { applyPalette(); syncProjector(); },
+  onSize: () => { syncProjector(); fit(); },
   onAdvisorReply: (m) => { for (const cb of advisorReplyCbs) cb(m); },
   onAdvisorStream: (m) => { for (const cb of advisorStreamCbs) cb(m); },
   onAny: (m) => { if (DEBUG) hostLog.push(m); },
 });
 if (DEBUG) { (window as any).__q = Object.fromEntries(params); (window as any).__msgs = hostLog; }
 const hikosMode = bridge.embedded || params.has('skin') || params.has('accent');
+const isInsitu = () => explicitInsitu === '0' ? false : (explicitInsitu === '1' || explicitInsitu === 'true' || bridge.embedded || !!bridge.context.insitu || !!bridge.context.map);
+let currentProjector: SpatialProjector | null = null;
+let hoverCell: { cx: number; cy: number; slot: number } | null = null;
 let currentTheme = legacyPalette ?? (hikosMode ? 'hikos' : 'default');
 let theme: Palette = legacyPalette ? PALETTES[legacyPalette] : hikosMode ? paletteForContext(bridge.context) : PALETTES.default;
 let lang = bridge.context.lang;
@@ -96,13 +104,39 @@ let cardView: AdvisorView = session.view();
 function scheduleCard() { cancelAnimationFrame(cardRaf); cardRaf = requestAnimationFrame(renderCard); }
 function renderCard() {
   cardView = session.view();
-  advisorBox.style.display = inLobby ? 'none' : 'block';
+  advisorBox.style.display = inLobby && !isInsitu() ? 'none' : 'block';
   renderAdvisorCard(advisorBox, cardView, pack, lang, state.phase, {
-    adopt: (id) => { queue.push(...session.adopt(id)); },
-    takeGambit: () => { const c = session.takeGambit(); if (c) queue.push(c); },
+    adopt: (id) => {
+      if (inLobby) enterBattleInSitu();
+      queue.push(...session.adopt(id));
+    },
+    takeGambit: () => {
+      if (inLobby) enterBattleInSitu();
+      const c = session.takeGambit();
+      if (c) queue.push(c);
+    },
     setAutopilot: (on) => session.setAutopilot(on),
   });
   fit();
+}
+
+function syncProjector() {
+  if (isInsitu()) {
+    const vw = Math.max(320, document.documentElement.clientWidth || window.innerWidth || 960);
+    const vh = Math.max(240, document.documentElement.clientHeight || window.innerHeight || 640);
+    if (canvas.width !== vw || canvas.height !== vh) {
+      canvas.width = vw;
+      canvas.height = vh;
+    }
+    currentProjector = createSpatialProjector(pack, vw, vh, bridge.context.map ?? null);
+  } else {
+    const gw = pack.map.width * PX, gh = pack.map.height * PX;
+    if (canvas.width !== gw || canvas.height !== gh) {
+      canvas.width = gw;
+      canvas.height = gh;
+    }
+    currentProjector = null;
+  }
 }
 
 function applyPalette() {
@@ -114,6 +148,7 @@ function applyPalette() {
   r.setProperty('--td-accent', theme.accent ?? '#ffd36a');
   r.setProperty('--td-danger', theme.danger ?? '#ff9a8a');
   document.documentElement.dataset.theme = hikosMode ? bridge.context.theme : 'night';
+  document.documentElement.dataset.insitu = isInsitu() ? 'true' : 'false';
   document.documentElement.lang = lang;
 }
 function applyContext(c: HostContext) {
@@ -128,6 +163,7 @@ function applyContext(c: HostContext) {
   hostChannel?.setAvailable(c.advisor?.enabled === true);
   if (!legacyPalette) { theme = paletteForContext(c); currentTheme = 'hikos'; }
   applyPalette();
+  syncProjector();
   if (inLobby) refreshLobbyIdentity();
   renderHud();
   scheduleCard();
@@ -182,7 +218,10 @@ function renderHud() {
   w.disabled = s.phase === 'wave';
   w.onclick = () => {
     if (s.phase === 'won' || s.phase === 'lost') { startWith(pack); showLobby(); }
-    else queue.push({ type: 'start_wave' });
+    else {
+      if (inLobby) enterBattleInSitu();
+      queue.push({ type: 'start_wave' });
+    }
   };
   hud.append(w);
   if (s.phase === 'won' || s.phase === 'lost') {
@@ -224,9 +263,18 @@ function renderHud() {
   fit();
 }
 
-// ---- 嵌入时把画布缩放到容器里（任意宽高比、最小 480×360 可玩；接入说明 §1.3）
+// ---- 嵌入时把画布缩放到容器里（任意宽高比、最小 480×360 可玩；原位模式下画布与 #hub-view 视口 1:1 叠合）
 let fitRaf = 0;
 function fit() {
+  if (isInsitu()) {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => {
+      syncProjector();
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+    });
+    return;
+  }
   if (!bridge.embedded) return;
   cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
@@ -240,10 +288,68 @@ function fit() {
 window.addEventListener('resize', fit);
 if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fit).observe(document.documentElement);
 
-canvas.addEventListener('click', (ev) => {
+function resolveClientCell(clientX: number, clientY: number): { x: number; y: number; slot: number } {
   const r = canvas.getBoundingClientRect();
-  const x = Math.floor(((ev.clientX - r.left) / r.width) * pack.map.width);
-  const y = Math.floor(((ev.clientY - r.top) / r.height) * pack.map.height);
+  if (!r.width || !r.height) return { x: -1, y: -1, slot: -1 };
+  if (isInsitu()) {
+    if (!currentProjector) syncProjector();
+    const sx = ((clientX - r.left) / r.width) * canvas.width;
+    const sy = ((clientY - r.top) / r.height) * canvas.height;
+    const hit = currentProjector!.screenToCell(sx, sy);
+    return { x: hit.cx, y: hit.cy, slot: hit.slot };
+  }
+  return {
+    x: Math.floor(((clientX - r.left) / r.width) * pack.map.width),
+    y: Math.floor(((clientY - r.top) / r.height) * pack.map.height),
+    slot: -1,
+  };
+}
+
+function enterBattleInSitu() {
+  if (!inLobby) return;
+  inLobby = false;
+  lobby.style.display = 'none';
+  session.reset(state);
+  renderHud();
+  scheduleCard();
+}
+
+let pointerDrag: { startX: number; startY: number; lastX: number; lastY: number; moved: boolean } | null = null;
+canvas.addEventListener('pointerdown', (ev) => {
+  if (!isInsitu() || ev.button !== 0) return;
+  pointerDrag = { startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, moved: false };
+});
+canvas.addEventListener('pointermove', (ev) => {
+  if (isInsitu()) {
+    const hit = resolveClientCell(ev.clientX, ev.clientY);
+    hoverCell = hit.x >= 0 && hit.x < pack.map.width && hit.y >= 0 && hit.y < pack.map.height ? { cx: hit.x, cy: hit.y, slot: hit.slot } : null;
+    if (pointerDrag) {
+      const dx = ev.clientX - pointerDrag.lastX;
+      const dy = ev.clientY - pointerDrag.lastY;
+      if (Math.hypot(ev.clientX - pointerDrag.startX, ev.clientY - pointerDrag.startY) > 8) {
+        pointerDrag.moved = true;
+        bridge.send({ type: 'td:camera', kind: ev.shiftKey ? 'pan' : 'rotate', dx, dy });
+      }
+      pointerDrag.lastX = ev.clientX;
+      pointerDrag.lastY = ev.clientY;
+    }
+  }
+});
+canvas.addEventListener('pointerleave', () => {
+  hoverCell = null;
+  pointerDrag = null;
+});
+canvas.addEventListener('wheel', (ev) => {
+  if (!isInsitu()) return;
+  ev.preventDefault();
+  bridge.send({ type: 'td:camera', kind: 'zoom', dy: ev.deltaY });
+}, { passive: false });
+
+canvas.addEventListener('click', (ev) => {
+  if (pointerDrag?.moved) { pointerDrag = null; return; }
+  pointerDrag = null;
+  const { x, y } = resolveClientCell(ev.clientX, ev.clientY);
+  if (inLobby) enterBattleInSitu();
   queue.push({ type: 'build', tower_id: selected, x, y });
   session.notePlayerBuild();
 });
@@ -253,9 +359,8 @@ canvas.addEventListener('touchend', (e) => {
   const tp = e.changedTouches[0];
   if (!tp) return;
   e.preventDefault();
-  const r = canvas.getBoundingClientRect();
-  const x = Math.floor(((tp.clientX - r.left) / r.width) * pack.map.width);
-  const y = Math.floor(((tp.clientY - r.top) / r.height) * pack.map.height);
+  const { x, y } = resolveClientCell(tp.clientX, tp.clientY);
+  if (inLobby) enterBattleInSitu();
   queue.push({ type: 'build', tower_id: selected, x, y });
   session.notePlayerBuild();
 }, { passive: false });
@@ -279,9 +384,10 @@ function onEvents(evs: GameEvent[]) {
       if (btn) btn.style.display = 'block';
     }
     if (e.type === 'entity_died' && !bridge.context.reducedMotion) {
+      const pt = isInsitu() && currentProjector ? currentProjector.milliToScreen(e.x, e.y) : { x: toPx(e.x), y: toPx(e.y) };
       for (let i = 0; i < 15; i++) {
         particles.push({
-          x: toPx(e.x), y: toPx(e.y),
+          x: pt.x, y: pt.y,
           vx: (Math.random() - 0.5) * 100, vy: (Math.random() - 0.5) * 100,
           life: 0.5 + Math.random() * 0.5, maxLife: 1.0, color: theme.danger ?? '#f55'
         });
@@ -314,6 +420,30 @@ function tickOnce() {
 const toPx = (m: number) => (m / CELL) * PX;
 function draw() {
   const s = state;
+  if (isInsitu()) {
+    if (!currentProjector) syncProjector();
+    drawSpatialBattlefield(ctx, s, pack, theme, currentProjector!, {
+      pathCells: PATH_CELLS,
+      cardView,
+      selectedTowerId: selected,
+      hoverCell,
+      shots,
+      particles,
+      now: performance.now(),
+      inLobby,
+      lang,
+      heldText: t('held'),
+      fellText: t('fell'),
+    });
+    if (dbg.style.display !== 'none') {
+      dbg.textContent = `DEBUG  seed=${s.seed} tick=${s.tick} checksum=${checksum(s)}\n` +
+        `speed=${speed}x paused=${paused} hidden=${hostHidden} enemies=${s.enemies.length} towers=${s.towers.length} kills=${s.kills} leaks=${s.leaks}\n` +
+        `host: embedded=${bridge.embedded} insitu=${isInsitu()} skin=${bridge.context.skin ?? '-'} theme=${bridge.context.theme} lang=${lang} palette=${currentTheme}\n` +
+        `keys: p 暂停 · 1/2/4 倍速 · g +100金 · n 下一波 · F1/\` 开关\n` +
+        `cmds=${JSON.stringify(recorded.slice(-3))}`;
+    }
+    return;
+  }
   ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   for (let y = 0; y < pack.map.height; y++) {
@@ -481,8 +611,9 @@ function showLobby(sum?: Summary, text = '') {
   lastSum = sum;
   lobby.innerHTML = `<div class="card">${lobbyIdentityHtml(sum)}
   <textarea id="desc" rows="2" placeholder="描述你想要的战局，例如：长坂坡雨夜，人海战术">${esc(text)}</textarea>
-  <div class="row"><button id="gen"${designing ? ' disabled' : ''}>${designing ? '军师出题中…' : '让军师设计'}</button></div>
+  <div class="row"><button id="gen"${designing ? ' disabled' : ''}>${designing ? '军师出题中…' : '让军师设计'}</button><button id="td-direct-play" type="button">直接原位布防</button></div>
   <div id="summary"></div></div>`;
+  lobby.querySelector('#td-direct-play')?.addEventListener('click', () => enterBattleInSitu());
   const out = lobby.querySelector('#summary')!;
   if (designing && !sum) {
     const ag = activeAdvisorAgent();
@@ -536,7 +667,7 @@ async function revenge() {
 function startWith(p: ContentPack) {
   pack = p;
   PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
-  canvas.width = pack.map.width * PX; canvas.height = pack.map.height * PX;
+  syncProjector();
   selected = pack.towers[0].id;
   state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; queue = [];
   inLobby = false; lobby.style.display = 'none'; renderHud();
@@ -544,10 +675,37 @@ function startWith(p: ContentPack) {
   scheduleCard();
 }
 (window as any).__lobby = { gen: (tx: string) => { void design(tx); } };
+syncProjector();
 if (inLobby) showLobby(); else { lobby.style.display = 'none'; session.reset(state); }
 renderHud();
 requestAnimationFrame(frame);
-(window as any).__td = { get state() { return state; }, checksum: () => checksum(state), recorded, get host() { return { embedded: bridge.embedded, origin: bridge.origin, context: bridge.context, hidden: hostHidden, palette: currentTheme }; } };
+(window as any).__td = {
+  get state() { return state; },
+  checksum: () => checksum(state),
+  recorded,
+  get host() { return { embedded: bridge.embedded, origin: bridge.origin, context: bridge.context, hidden: hostHidden, palette: currentTheme }; },
+  get insitu() { return isInsitu(); },
+  get spatial() {
+    if (!isInsitu()) return null;
+    if (!currentProjector) syncProjector();
+    const p = currentProjector!;
+    return {
+      insitu: true,
+      canvasBg: 'transparent',
+      stage: { w: canvas.width, h: canvas.height },
+      azimuth: p.azimuth,
+      pitch: p.pitch,
+      zoom: p.zoom,
+      origin: p.origin,
+      cellPx: p.cellPx,
+      hostMap: p.hostMap,
+      waypoints: pack.map.path.map((c) => p.cellToScreen(c.x + 0.5, c.y + 0.5)),
+      tacticalSlots: p.tacticalSlots.slice(0, 16),
+      slotScreen: (slot: number) => { const c = slotCell(pack, slot); return c ? p.cellToScreen(c.x + 0.5, c.y + 0.5) : null; },
+      cellScreen: (cx: number, cy: number) => p.cellToScreen(cx + 0.5, cy + 0.5),
+    };
+  },
+};
 // 军师读点（E2E / 宿主侧 test-arcade 用）：只读视图 + 与卡片按钮等价的三个动作；没有任何注入回包的后门（回包只能从通道来）
 (window as any).__advisor = {
   mode: advisorSel.mode, reason: advisorSel.reason,
