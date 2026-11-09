@@ -2,12 +2,27 @@
 // 游戏被宿主用 sandbox="allow-scripts" 的 iframe 嵌在 /arcade/tower-defense/：不透明源，没有 localStorage / cookie，所有状态只放内存。
 // 宿主 → 游戏：首帧前走 URL query（v skin accent bg ink theme lang），运行中走 hikos:context / hikos:visibility / hikos:size。
 // 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h}。消息里没有任何身份信息，只有展示类字段。
+// 军师（任务 fb4d93bc，06 规格 §3）：游戏 → 宿主 td:advisor:request {reqId, kind, deadlineMs, stateVersion, snapshot, llm}；
+//   宿主 → 游戏 hikos:advisor:reply {reqId, ok, payload | error, provider, latencyMs}；hikos:context 可多带 advisor {enabled, provider}（只增不改）。
+//   宿主拿自己的凭据与路由去调模型；游戏只送极简决策快照与提示词，不碰端点与密钥。
+
+import { parseSpatialMap, type HostSpatialMap, type HostSpatialNode } from './spatialMap';
+export { parseSpatialMap, type HostSpatialMap, type HostSpatialNode };
 
 export const PROTOCOL = 1;
 
 export type HostTheme = 'day' | 'night';
 export type HostLang = 'zh' | 'en';
 export type GameState = 'idle' | 'playing' | 'paused' | 'won' | 'lost';
+
+export interface HostAdvisorAgent {
+  id?: string;
+  name: string;
+  title?: string;
+  avatar?: string;
+  color?: string;
+  persona?: string;
+}
 
 export interface HostContext {
   v: number;
@@ -22,10 +37,16 @@ export interface HostContext {
   theme: HostTheme;
   lang: HostLang;
   reducedMotion: boolean;
+  /** 宿主能否代理军师请求（只有 hikos:context 带）；null = 宿主没说（按能代理处理，等它回） */
+  advisor: { enabled: boolean; provider: string | null; agent?: HostAdvisorAgent | null } | null;
+  /** 是否在宿主 #hub-view 空间皮肤地图上原位开玩（v1 加法字段） */
+  insitu?: boolean;
+  /** 宿主空间皮肤地图的场景坐标与相机参数（v1 加法字段） */
+  map?: HostSpatialMap | null;
 }
 
 export const DEFAULT_CONTEXT: HostContext = {
-  v: PROTOCOL, skin: null, name: null, accent: null, bg: null, ink: null, theme: 'day', lang: 'zh', reducedMotion: false,
+  v: PROTOCOL, skin: null, name: null, accent: null, bg: null, ink: null, theme: 'day', lang: 'zh', reducedMotion: false, advisor: null, insitu: false, map: null,
 };
 
 /** 宿主只认 6 位 hex（去 #）；这里顺带接受带 # 的写法，其它一律 null（接入说明 §1.5「否则用缺省」）。 */
@@ -62,7 +83,37 @@ export function contextFromQuery(search: string): HostContext {
     theme,
     lang: pick(q.get('lang'), LANGS, DEFAULT_CONTEXT.lang),
     reducedMotion: false,
+    advisor: null,
+    insitu: q.get('insitu') === '1' || q.get('insitu') === 'true',
+    map: null,
   };
+}
+
+function parseAdvisorAgent(raw: unknown): HostAdvisorAgent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const g = raw as Record<string, unknown>;
+  const name = typeof g.name === 'string' ? g.name.trim().slice(0, 48) : '';
+  if (!name) return null;
+  const out: HostAdvisorAgent = { name };
+  if (typeof g.id === 'string' && g.id.trim()) out.id = g.id.trim().slice(0, 64);
+  if (typeof g.title === 'string' && g.title.trim()) out.title = g.title.trim().slice(0, 48);
+  if (typeof g.avatar === 'string' && g.avatar.trim() && g.avatar.length <= 32768) out.avatar = g.avatar.trim();
+  if (typeof g.color === 'string' && parseHex(g.color)) out.color = parseHex(g.color)!;
+  if (typeof g.persona === 'string' && g.persona.trim()) out.persona = g.persona.trim().slice(0, 800);
+  return out;
+}
+
+function parseAdvisor(v: unknown, prev: HostContext['advisor']): HostContext['advisor'] {
+  if (v === undefined) return prev;
+  if (!v || typeof v !== 'object') return null;
+  const a = v as Record<string, unknown>;
+  const agent = 'agent' in a ? parseAdvisorAgent(a.agent) : (typeof a.name === 'string' ? parseAdvisorAgent(a) : prev?.agent);
+  const res: NonNullable<HostContext['advisor']> = {
+    enabled: a.enabled === true,
+    provider: typeof a.provider === 'string' && a.provider.length <= 64 ? a.provider : null,
+  };
+  if (agent !== undefined) res.agent = agent;
+  return res;
 }
 
 /** 合并一条 hikos:context（§1.6）：字段只增不改，缺的字段保留上一次的值。 */
@@ -82,6 +133,9 @@ export function contextFromMessage(msg: unknown, prev: HostContext): HostContext
     theme: pick(m.theme, THEMES, prev.theme),
     lang: pick(m.lang, LANGS, prev.lang),
     reducedMotion: typeof m.reducedMotion === 'boolean' ? m.reducedMotion : prev.reducedMotion,
+    advisor: parseAdvisor(m.advisor, prev.advisor),
+    insitu: typeof m.insitu === 'boolean' ? m.insitu : (m.map && typeof m.map === 'object' ? true : prev.insitu),
+    map: parseSpatialMap(m.map, prev.map ?? null),
   };
 }
 
@@ -102,6 +156,12 @@ export interface HostMessageHandlers {
   onContext?: (ctx: HostContext) => void;
   onVisibility?: (visible: boolean) => void;
   onSize?: (w: number, h: number) => void;
+  /** 宿主空间皮肤地图场景坐标更新（hikos:map 或 hikos:context.map） */
+  onMap?: (map: HostSpatialMap) => void;
+  /** 宿主代发军师回来的回包（hikos:advisor:reply）；配对与校验在 src/advisor/session.ts */
+  onAdvisorReply?: (msg: Record<string, unknown>) => void;
+  /** 宿主代发军师的 SSE 流式增量（hikos:advisor:stream） */
+  onAdvisorStream?: (msg: Record<string, unknown>) => void;
   /** 每条通过源校验的 hikos:* 消息（调试 / 宿主侧 test-arcade 读点用） */
   onAny?: (msg: Record<string, unknown>) => void;
 }
@@ -115,6 +175,8 @@ export interface HostBridge {
   state(s: GameState): void;
   exit(): void;
   resize(w: number, h: number): void;
+  /** 军师请求（td:advisor:request）；message.type 必须以 td: 开头，别的不发 */
+  send(message: Record<string, unknown>): void;
   dispose(): void;
 }
 
@@ -140,11 +202,23 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
       context = contextFromMessage(m, context);
       bridge.context = context;
       handlers.onContext?.(context);
+      if (context.map) handlers.onMap?.(context.map);
+    } else if (m.type === 'hikos:map') {
+      const nextMap = parseSpatialMap((m as { map?: unknown }).map ?? m, context.map ?? null);
+      if (nextMap) {
+        context = { ...context, insitu: true, map: nextMap };
+        bridge.context = context;
+        handlers.onMap?.(nextMap);
+      }
     } else if (m.type === 'hikos:visibility') {
       handlers.onVisibility?.(!!(m as { visible?: unknown }).visible);
     } else if (m.type === 'hikos:size') {
       const { w, h } = m as { w?: unknown; h?: unknown };
       if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) handlers.onSize?.(w, h);
+    } else if (m.type === 'hikos:advisor:reply') {
+      handlers.onAdvisorReply?.(m as Record<string, unknown>);
+    } else if (m.type === 'hikos:advisor:stream') {
+      handlers.onAdvisorStream?.(m as Record<string, unknown>);
     }
   };
   if (embedded) win.addEventListener('message', onMessage);
@@ -156,6 +230,7 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
     state(s) { if (!STATES.includes(s) || s === lastState) return; lastState = s; if (readySent) post({ type: 'td:state', state: s }); },
     exit() { post({ type: 'td:exit' }); },
     resize(w, h) { post({ type: 'td:resize', w: Math.round(w), h: Math.round(h) }); },
+    send(message) { if (typeof message.type === 'string' && message.type.startsWith('td:')) post(message); },
     dispose() { if (embedded) win.removeEventListener('message', onMessage); },
   };
   return bridge;

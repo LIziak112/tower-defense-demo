@@ -47,9 +47,14 @@ export interface EnemyInst {
   iid: number; def: string; hp: number; progress: number; // milli-cell travelled along path
   x: number; y: number; life: Life;
 }
-export interface SpawnPlan { enemy_id: string; at_tick: number }
+/** hp_mul：变招「铁甲」给这一波敌人加的血量倍率；没有就是 1（不写进字段，checksum 也不带）。 */
+export interface SpawnPlan { enemy_id: string; at_tick: number; hp_mul?: number }
 
 export type Phase = 'build' | 'wave' | 'won' | 'lost';
+
+/** 变招（军师玩法增强 ②）：建造期接一张，下一波更难、现在拿一笔金币；每个建造期至多一张，不接无罚。规则表在 ./gambit.ts。 */
+export type GambitId = 'swarm' | 'tight' | 'tough';
+export interface GambitTaken { wave: number; id: GambitId; bonus: number }
 
 export interface BattleState {
   tick: number;
@@ -68,11 +73,14 @@ export interface BattleState {
   leaks: number;
   pack: ContentPack;
   path_len: number;
+  /** 本建造期接下的变招（wave = 它作用的 wave_index）；null = 没接。开波时按它改波次，之后留着供 HUD / 复盘读。 */
+  gambit: GambitTaken | null;
 }
 
 export type Command =
   | { type: 'build'; tower_id: string; x: number; y: number }
   | { type: 'start_wave' }
+  | { type: 'gambit'; id: GambitId }
   | { type: 'debug_add_gold'; amount: number }
   | { type: 'debug_next_wave' };
 
@@ -87,4 +95,6 @@ export type GameEvent =
   | { type: 'entity_died'; iid: number; reward: number; x: number; y: number }
   | { type: 'entity_escaped'; iid: number; base_damage: number }
   | { type: 'wave_cleared'; wave: number }
+  | { type: 'gambit_accepted'; id: GambitId; wave: number; bonus: number }
+  | { type: 'gambit_rejected'; code: string; message: string; id: string }
   | { type: 'battle_ended'; result: 'won' | 'lost' };

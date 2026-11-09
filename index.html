@@ -3,35 +3,628 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>塔防 · Tower Defense</title>
   <style>
     /* 配色由 src/game/main.ts 在运行时写进这些变量：独立页用内置三套，嵌进 Hikos 时跟宿主皮肤（skin / accent / bg / ink / theme）走 */
-    :root { --td-bg: #11161d; --td-paper: #2b3846; --td-ink: #e8e8e8; --td-hair: #555; --td-accent: #ffd36a; --td-danger: #ff9a8a; }
+    :root {
+      --td-bg: #11161d;
+      --td-paper: #2b3846;
+      --td-ink: #e8e8e8;
+      --td-hair: #555;
+      --td-accent: #ffd36a;
+      --td-danger: #ff9a8a;
+      --td-ok: #338a72;
+      color-scheme: dark;
+    }
+    html[data-theme="day"] { color-scheme: light; }
+    html[data-theme="night"] { color-scheme: dark; }
     html, body { height: 100%; }
-    body { margin: 0; background: var(--td-bg); color: var(--td-ink); font-family: "IBM Plex Sans", "PingFang SC", system-ui, sans-serif; overflow: hidden; }
+    body {
+      margin: 0;
+      background: var(--td-bg);
+      color: var(--td-ink);
+      font-family: "IBM Plex Sans", "Plex SC", "PingFang SC", system-ui, sans-serif;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
     #game-container { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; box-sizing: border-box; height: 100%; }
-    #hud { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; font-size: 16px; }
-    #hud .stats { font-variant-numeric: tabular-nums; }
-    #hud button, #hud select { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--td-hair); background: var(--td-paper); color: var(--td-ink); cursor: pointer; font: inherit; font-size: 14px; }
-    #hud button.sel { border-color: var(--td-accent); box-shadow: inset 0 0 0 1px var(--td-accent); }
-    #hud button:disabled { opacity: .4; cursor: default; }
-    #hud button.exit { margin-left: 8px; opacity: .8; }
-    .toast { color: var(--td-danger); }
+
+    /* ── 顶部战术指挥仪 (#hud) ── */
+    #hud {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+    #hud .stats {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--td-bg) 45%, transparent);
+      border: 1px solid color-mix(in srgb, var(--td-hair) 65%, transparent);
+    }
+    #hud .stats.next-wave {
+      color: var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 12%, transparent);
+      border-color: color-mix(in srgb, var(--td-accent) 40%, transparent);
+    }
+    #hud button, #hud select {
+      padding: 5px 11px;
+      border-radius: 4px;
+      border: 1px solid var(--td-hair);
+      background: color-mix(in srgb, var(--td-paper) 92%, var(--td-bg));
+      color: var(--td-ink);
+      cursor: pointer;
+      font: 600 12.5px/1.2 inherit;
+      transition: filter .15s, border-color .15s, background .15s;
+    }
+    #hud button:hover:not(:disabled) { filter: brightness(1.06); border-color: var(--td-accent); }
+    #hud button.sel {
+      border-color: var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 18%, var(--td-paper));
+      box-shadow: inset 0 -2px 0 var(--td-accent);
+    }
+    #hud #start-wave {
+      background: var(--td-accent);
+      color: var(--td-paper);
+      border-color: var(--td-accent);
+      font-weight: 700;
+      padding: 5px 14px;
+    }
+    #hud button:disabled { opacity: .42; cursor: default; }
+    #hud button.exit {
+      margin-left: 2px;
+      background: transparent;
+      border-color: color-mix(in srgb, var(--td-hair) 80%, transparent);
+      opacity: .85;
+    }
+    .toast {
+      color: var(--td-danger);
+      font-weight: 600;
+      font-size: 12px;
+      padding: 2px 6px;
+    }
+
     #board { max-width: 100%; height: auto; cursor: crosshair; border-radius: 4px; }
-    #debug { font: 12px monospace; background: #000a; color: #eee; padding: 6px 10px; margin: 0; max-width: 672px; white-space: pre-wrap; }
-    #lobby { position: fixed; inset: 0; background: rgba(8,10,14,.82); display: none; }
-    #lobby .card { max-width: 560px; margin: 60px auto; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); border-radius: 12px; padding: 16px 20px; color: #e8e8e8; }
-    #lobby textarea { width: 100%; box-sizing: border-box; background: #0e1116; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px; font: inherit; }
-    #lobby .row { display: flex; gap: 8px; margin-top: 8px; }
-    #lobby button { padding: 6px 14px; border-radius: 6px; border: 1px solid #666; background: #2b3846; color: #eee; cursor: pointer; }
-    #lobby .echo { color: #E8C170; } #lobby .warn { color: #ffcf6a; } #lobby .err { color: #ff9a8a; } #lobby .dry { color: #9fb3c8; font-size: 14px; }
-    #lobby small { color: #9fb3c8; font-weight: normal; font-size: 12px; }
-    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+    #debug { font: 11px/1.35 "IBM Plex Mono", ui-monospace, monospace; background: rgba(10, 14, 20, .82); color: #e8eef5; padding: 6px 10px; margin: 0; max-width: 640px; border-radius: 4px; white-space: pre-wrap; }
+
+    /* ── 军师战术简报对话框 (#advisor) —— 贴合皮肤、尺寸紧凑、支持折叠 ── */
+    #advisor {
+      width: min(100%, 640px);
+      box-sizing: border-box;
+      background: color-mix(in srgb, var(--td-paper) 92%, transparent);
+      border: 1px solid var(--td-hair);
+      border-top: 2.5px solid var(--td-accent);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.38;
+      color: var(--td-ink);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
+    }
+    #advisor:empty { display: none; }
+    #advisor p { margin: 3px 0; }
+    #advisor .adv-head {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #advisor .adv-avatar, #lobby .lobby-adv-av {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      object-fit: cover;
+      flex-shrink: 0;
+      vertical-align: middle;
+    }
+    #advisor .adv-avatar-glyph, #lobby .lobby-adv-glyph {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--adv-c, var(--td-accent));
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      clip-path: polygon(50% 4%, 96% 50%, 50% 96%, 4% 50%);
+    }
+    #advisor .adv-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex: 1;
+    }
+    #advisor .adv-title {
+      font-weight: 700;
+      font-size: 12.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #advisor .adv-badge {
+      font-size: 10.5px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      border: 1px solid var(--td-hair);
+      background: color-mix(in srgb, var(--td-bg) 45%, transparent);
+      white-space: nowrap;
+      opacity: .9;
+    }
+    #advisor .adv-badge.llm {
+      border-color: color-mix(in srgb, var(--td-accent) 65%, transparent);
+      color: var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 12%, transparent);
+      font-weight: 600;
+    }
+    #advisor .adv-head-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    #advisor .adv-score {
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--td-bg) 55%, transparent);
+    }
+    #advisor .adv-auto {
+      font-size: 11px;
+      opacity: .88;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      user-select: none;
+    }
+    #advisor .adv-fold-btn {
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border-radius: 4px;
+      border: 1px solid color-mix(in srgb, var(--td-hair) 70%, transparent);
+      background: transparent;
+      color: var(--td-ink);
+      font-size: 11px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    #advisor .adv-say {
+      color: var(--td-ink);
+      font-weight: 600;
+      font-size: 12px;
+      padding: 4px 8px;
+      margin: 5px 0 4px;
+      border-left: 2.5px solid var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 10%, transparent);
+      border-radius: 0 4px 4px 0;
+    }
+    #advisor .adv-say-compact { margin: 4px 0 0; }
+    #advisor .adv-notice {
+      color: var(--td-danger);
+      font-size: 11px;
+      opacity: .9;
+    }
+    #advisor .adv-betline {
+      color: var(--td-accent);
+      font-weight: 600;
+      font-size: 11.5px;
+    }
+    #advisor .adv-options {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    #advisor .adv-opt {
+      border: 1px solid color-mix(in srgb, var(--td-hair) 80%, transparent);
+      background: color-mix(in srgb, var(--td-bg) 38%, var(--td-paper));
+      border-radius: 5px;
+      padding: 5px 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    #advisor .adv-line {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    #advisor .adv-opt-tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      background: var(--td-accent);
+      color: var(--td-paper);
+      font-size: 10.5px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    #advisor .adv-opt-title {
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #advisor .adv-opt .adv-moves {
+      font-size: 11px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--td-paper) 75%, var(--td-bg));
+      border: 1px solid color-mix(in srgb, var(--td-hair) 60%, transparent);
+      opacity: .92;
+    }
+    #advisor .adv-adopt {
+      margin-left: auto;
+      padding: 2px 9px;
+      border-radius: 4px;
+      border: 1px solid var(--td-accent);
+      background: var(--td-accent);
+      color: var(--td-paper);
+      font: 600 11px/1.3 inherit;
+      cursor: pointer;
+    }
+    #advisor .adv-adopt.is-adopted {
+      background: transparent;
+      color: var(--td-ink);
+      border-color: var(--td-hair);
+    }
+    #advisor .adv-why {
+      font-size: 11.5px;
+      opacity: .92;
+      margin: 1px 0 0;
+    }
+    #advisor .adv-risk {
+      font-size: 11px;
+      opacity: .72;
+      margin: 0;
+    }
+    #advisor button:disabled { opacity: .42; cursor: default; }
+    #advisor .adv-bet {
+      font-size: 11px;
+      opacity: .85;
+      margin-top: 4px;
+    }
+    #advisor .adv-gambit {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 4px;
+      padding: 4px 7px;
+      border-radius: 4px;
+      border: 1px dashed var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 8%, transparent);
+    }
+    #advisor .adv-gambit-info {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      font-size: 11px;
+    }
+    #advisor .adv-take {
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--td-accent);
+      background: var(--td-paper);
+      color: var(--td-ink);
+      font: 600 11px/1.3 inherit;
+      cursor: pointer;
+    }
+
+    /* ── 聊天式自然语言气泡（#advisor 与 #lobby 共用） ── */
+    .adv-chat-bubble, .lobby-chat-bubble {
+      margin-top: 6px;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--td-bg) 52%, var(--td-paper));
+      border: 1px solid color-mix(in srgb, var(--td-hair) 75%, transparent);
+      font-size: 12px;
+      line-height: 1.42;
+      color: var(--td-ink);
+    }
+    .adv-chat-bubble.thinking {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      border-color: color-mix(in srgb, var(--td-accent) 55%, var(--td-hair));
+    }
+    .stream-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .adv-pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--td-accent);
+      flex-shrink: 0;
+      margin-top: 3px;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--td-accent) 25%, transparent);
+      animation: tdPulse 1.4s infinite ease-in-out;
+    }
+    .stream-head .adv-pulse-dot { margin-top: 0; }
+    @keyframes tdPulse {
+      0%, 100% { transform: scale(0.92); opacity: 0.7; }
+      50% { transform: scale(1.15); opacity: 1; }
+    }
+    .chat-md-p { margin: 2px 0; }
+    .chat-md-list { margin: 3px 0; padding-left: 16px; }
+    .chat-md-list li { margin: 1.5px 0; }
+    .chat-msg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; font-size: 11px; color: var(--td-accent); }
+    .chat-msg-head span { padding: 1px 6px; border-radius: 99px; border: 1px solid color-mix(in srgb, var(--td-accent) 50%, transparent); font-size: 10px; }
+
+    /* ── 军师议事对话框 (#lobby) —— 贴合皮肤、精致紧凑 ── */
+    #lobby {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 10, 14, .78);
+      display: none;
+      overflow-y: auto;
+      padding: 12px 12px 104px;
+      box-sizing: border-box;
+    }
+    #lobby .card {
+      max-width: 460px;
+      max-height: calc(100dvh - 120px);
+      overflow-y: auto;
+      margin: 20px auto;
+      background: color-mix(in srgb, var(--td-paper) 94%, var(--td-bg));
+      border: 1px solid var(--td-hair);
+      border-top: 2.5px solid var(--td-accent);
+      border-radius: 6px;
+      padding: 12px 14px;
+      color: var(--td-ink);
+      box-sizing: border-box;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .2);
+    }
+    #lobby h3 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 0 0 6px;
+      font-size: 13.5px;
+      font-weight: 700;
+    }
+    #lobby small {
+      color: var(--td-ink);
+      opacity: .72;
+      font-weight: 500;
+      font-size: 11px;
+      margin-left: auto;
+    }
+    #lobby textarea {
+      width: 100%;
+      box-sizing: border-box;
+      background: color-mix(in srgb, var(--td-bg) 65%, var(--td-paper));
+      color: var(--td-ink);
+      border: 1px solid var(--td-hair);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: 12px/1.4 inherit;
+      resize: none;
+    }
+    #lobby textarea:focus {
+      outline: none;
+      border-color: var(--td-accent);
+    }
+    #lobby .lobby-presets {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      margin-top: 5px;
+    }
+    #lobby .preset-chip {
+      padding: 2px 7px;
+      border-radius: 99px;
+      border: 1px solid color-mix(in srgb, var(--td-hair) 80%, transparent);
+      background: color-mix(in srgb, var(--td-bg) 35%, transparent);
+      color: var(--td-ink);
+      font: 11px/1.3 inherit;
+      opacity: .85;
+      cursor: pointer;
+    }
+    #lobby .preset-chip:hover {
+      opacity: 1;
+      border-color: var(--td-accent);
+      color: var(--td-accent);
+    }
+    #lobby .row {
+      display: flex;
+      gap: 6px;
+      margin-top: 7px;
+      flex-wrap: wrap;
+    }
+    #lobby #summary .row {
+      position: sticky;
+      bottom: -12px;
+      z-index: 2;
+      padding: 7px 0 2px;
+      background: color-mix(in srgb, var(--td-paper) 96%, transparent);
+      backdrop-filter: blur(8px);
+    }
+    #lobby button {
+      padding: 5px 11px;
+      border-radius: 4px;
+      border: 1px solid var(--td-hair);
+      background: var(--td-paper);
+      color: var(--td-ink);
+      font: 600 12px/1.25 inherit;
+      cursor: pointer;
+    }
+    #lobby button.primary-btn {
+      background: var(--td-accent);
+      color: var(--td-paper);
+      border-color: var(--td-accent);
+      flex: 1;
+    }
+    #lobby button.ghost-btn {
+      background: color-mix(in srgb, var(--td-bg) 40%, var(--td-paper));
+      color: var(--td-ink);
+    }
+    #lobby button:disabled { opacity: .52; cursor: default; }
+    #lobby .echo { font-weight: 600; margin: 0 0 5px; color: var(--td-ink); }
+    #lobby .warn { color: var(--td-danger); font-size: 11.5px; margin: 3px 0; }
+    #lobby .err { color: var(--td-danger); font-size: 11.5px; margin: 3px 0; }
+    #lobby .dry { font-size: 11px; opacity: .78; margin: 5px 0 0; }
+    #lobby .lobby-pack-grid {
+      display: grid;
+      gap: 3px;
+      padding: 5px 7px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--td-paper) 65%, var(--td-bg));
+      border: 1px solid color-mix(in srgb, var(--td-hair) 60%, transparent);
+      font-size: 11.5px;
+    }
+    #lobby .lobby-pack-grid > div {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+    }
+    #lobby .meta-k {
+      font-weight: 600;
+      opacity: .72;
+      flex-shrink: 0;
+    }
+    #lobby .meta-v {
+      font-weight: 500;
+    }
+    #lobby .stream-stage {
+      margin: 0;
+      color: var(--td-accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #lobby .stream-parsed {
+      margin: 0;
+      font-size: 11.5px;
+    }
+
+    /* ── 空间皮肤地图原位模式（data-insitu="true"）：画布与背景全透明，直接透出宿主 #hub-view 皮肤地图 ── */
+    html[data-insitu="true"],
+    html[data-insitu="true"] body,
+    html[data-insitu="true"] #game-container,
+    html[data-insitu="true"] #board {
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+    html[data-insitu="true"] #game-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      gap: 0;
+      overflow: hidden;
+    }
+    html[data-insitu="true"] #board {
+      position: absolute;
+      inset: 0;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none;
+      border-radius: 0;
+      z-index: 1;
+    }
+    html[data-insitu="true"] #hud {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+      max-width: calc(100% - 230px);
+      padding: 5px 10px;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--td-paper) 90%, transparent);
+      border: 1px solid var(--td-hair);
+      border-top: 2px solid var(--td-accent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .14);
+    }
+    html[data-insitu="true"] #advisor {
+      position: absolute;
+      left: 14px;
+      top: 56px;
+      z-index: 3;
+      width: min(264px, calc(100% - 28px));
+      max-height: calc(100% - 170px);
+      overflow-y: auto;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    html[data-insitu="true"] #lobby {
+      position: absolute;
+      top: 56px;
+      right: 14px;
+      left: auto;
+      bottom: 104px;
+      inset: 56px 14px 104px auto;
+      width: min(284px, calc(100% - 28px));
+      padding: 0;
+      background: transparent;
+      z-index: 4;
+      pointer-events: none;
+      overflow: visible;
+      display: flex;
+      flex-direction: column;
+    }
+    html[data-insitu="true"] #lobby .card {
+      margin: 0;
+      max-width: none;
+      max-height: 100%;
+      overflow-y: auto;
+      padding: 10px 12px;
+      background: color-mix(in srgb, var(--td-paper) 92%, transparent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      pointer-events: auto;
+    }
+    html[data-insitu="true"] #debug {
+      position: absolute;
+      right: 14px;
+      bottom: 112px;
+      z-index: 3;
+    }
+    @media (max-width: 760px) {
+      html[data-insitu="true"] #hud { top: 8px; left: 8px; right: 8px; transform: none; max-width: none; }
+      html[data-insitu="true"] #advisor { left: 8px; right: 8px; top: auto; bottom: 108px; width: auto; max-height: 34%; }
+      html[data-insitu="true"] #lobby { top: 64px; right: 8px; left: 8px; width: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
   </style>
+  <script>
+    // 首帧合成前同步初始化 data-theme 与 color-scheme，杜绝 WebKit/Blink 在夜色皮肤下给 iframe 绘制不透明白底
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search);
+        var th = q.get('theme') === 'night' ? 'night' : (q.get('theme') === 'day' ? 'day' : 'night');
+        var d = document.documentElement;
+        d.dataset.theme = th;
+        d.style.colorScheme = th === 'night' ? 'dark' : 'light';
+        if (window.parent !== window || q.get('insitu') === '1' || q.get('insitu') === 'true') {
+          d.dataset.insitu = 'true';
+        }
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div id="game-container"></div>
-  <!-- D1 entry: new deterministic runtime. Legacy src/main.js + src/runtime.js are kept (not deleted) for migration reference. -->
   <script type="module" src="/src/game/main.ts"></script>
 </body>
 </html>
