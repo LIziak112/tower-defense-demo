@@ -52,6 +52,26 @@
       color: var(--td-accent);
       background: color-mix(in srgb, var(--td-accent) 12%, transparent);
       border-color: color-mix(in srgb, var(--td-accent) 40%, transparent);
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #hud .stats.cp-badge {
+      color: var(--td-ink);
+      background: color-mix(in srgb, var(--td-accent) 15%, var(--td-paper));
+      border-color: color-mix(in srgb, var(--td-accent) 48%, transparent);
+      white-space: nowrap;
+    }
+    #hud .stats.cp-badge.cp-won {
+      color: var(--td-ok);
+      border-color: var(--td-ok);
+      background: color-mix(in srgb, var(--td-ok) 16%, var(--td-paper));
+    }
+    #hud .stats.cp-badge.cp-lost {
+      color: var(--td-danger);
+      border-color: var(--td-danger);
+      background: color-mix(in srgb, var(--td-danger) 16%, var(--td-paper));
     }
     #hud button, #hud select {
       padding: 5px 11px;
@@ -543,10 +563,13 @@
     html[data-insitu="true"] #hud {
       position: absolute;
       top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
+      left: 14px;
+      right: 210px;
+      transform: none;
+      width: fit-content;
+      max-width: calc(100% - 224px);
+      margin: 0 auto;
       z-index: 3;
-      max-width: calc(100% - 230px);
       padding: 5px 10px;
       border-radius: 6px;
       background: color-mix(in srgb, var(--td-paper) 90%, transparent);
@@ -555,25 +578,28 @@
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
       box-shadow: 0 6px 20px rgba(0, 0, 0, .14);
+      box-sizing: border-box;
     }
     html[data-insitu="true"] #advisor {
       position: absolute;
       left: 14px;
-      top: 56px;
+      top: var(--td-hud-bottom, 58px);
       z-index: 3;
       width: min(264px, calc(100% - 28px));
-      max-height: calc(100% - 170px);
+      max-height: calc(100% - var(--td-hud-bottom, 58px) - 144px);
+      overflow-x: hidden;
       overflow-y: auto;
+      overflow-wrap: break-word;
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
     }
     html[data-insitu="true"] #lobby {
       position: absolute;
-      top: 56px;
+      top: var(--td-hud-bottom, 58px);
       right: 14px;
       left: auto;
-      bottom: 104px;
-      inset: 56px 14px 104px auto;
+      bottom: 144px;
+      inset: var(--td-hud-bottom, 58px) 14px 144px auto;
       width: min(284px, calc(100% - 28px));
       padding: 0;
       background: transparent;
@@ -587,7 +613,9 @@
       margin: 0;
       max-width: none;
       max-height: 100%;
+      overflow-x: hidden;
       overflow-y: auto;
+      overflow-wrap: break-word;
       padding: 10px 12px;
       background: color-mix(in srgb, var(--td-paper) 92%, transparent);
       backdrop-filter: blur(10px);

@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 const GRID_W = 12, GRID_H = 9, TOWER_COST = 60;
 
 async function gold(page: Page) {
-  return Number(((await page.textContent('#hud')) ?? '').match(/金币 (\d+)/)![1]);
+  return Number(((await page.textContent('#hud')) ?? '').match(/(?:金币|CP) (\d+)/)![1]);
 }
 async function cell(page: Page, cx: number, cy: number) {
   const r = (await page.locator('#board').boundingBox())!;

@@ -81,7 +81,7 @@ export function validatePack(input: unknown): ValidateResult {
     const b = `/enemies/${i}/components`;
     range(errors, `${b}/Health/max`, e.components.Health.max, G.enemy_max_health, '敌人最大生命');
     range(errors, `${b}/Movement/speed_milli_per_tick`, e.components.Movement.speed_milli_per_tick, G.enemy_speed, '敌人速度');
-    range(errors, `${b}/Reward/gold`, e.components.Reward.gold, G.enemy_gold, '敌人赏金');
+    range(errors, `${b}/Reward/gold`, e.components.Reward.gold, G.enemy_gold, '敌人 CP 奖励');
   });
   p.waves.forEach((w, i) => range(errors, `/waves/${i}/groups`, w.groups.reduce((a, g) => a + g.count, 0), G.wave_total_enemies, `第 ${i + 1} 波敌人总数`));
   range(errors, '/waves', p.waves.length, G.wave_count, '波次数量');

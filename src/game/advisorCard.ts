@@ -40,7 +40,7 @@ const STR = {
     thinking: 'Analyzing…',
     adopt: 'Adopt',
     adopted: 'Adopted',
-    noSpend: 'Hold gold',
+    noSpend: 'Hold CP',
     bet: 'Wager: ',
     gambit: 'Gambit',
     take: 'Take',

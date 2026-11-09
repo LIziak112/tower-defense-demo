@@ -16,7 +16,7 @@ export function escHtml(s: unknown): string {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c] || c);
 }
 
-/** 过滤内部技术词汇（「流式」「Mock」「TIMEOUT」等），转化为自然军师用语 */
+/** 过滤内部技术词汇（「流式」「Mock」「TIMEOUT」等）以及旧“金币”提法，转化为自然军师用语与统一 CP 资源口径 */
 export function cleanTechTerms(text: string, lang: 'zh' | 'en' = 'zh'): string {
   if (!text) return '';
   let out = text
@@ -25,6 +25,9 @@ export function cleanTechTerms(text: string, lang: 'zh' | 'en' = 'zh'): string {
     .replace(/流式推演/g, '沙盘推演')
     .replace(/已流式输出\s*\d+\s*字/g, '正在拟定阵法')
     .replace(/流式/g, '实时')
+    .replace(/金币/g, 'CP')
+    .replace(/赏金/g, 'CP 奖励')
+    .replace(/(\d+)\s*金(?![a-zA-Z\u4e00-\u9fa5])/g, '$1 CP')
     .replace(/（Mock，未接通?\s*LLM）/gi, '')
     .replace(/\(Mock,\s*LLM not connected\)/gi, '')
     .replace(/本地模板军师/g, lang === 'zh' ? '沙盘参谋' : 'Tactical Aide')
@@ -165,10 +168,10 @@ const clipStr = (v: unknown, maxLen: number, fallback: string): string => {
 export function normalizeLlmAdvice(raw: unknown, fallbackStateVersion = 0): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const obj = { ...(raw as Record<string, unknown>) };
-  if (typeof obj.basedOn !== 'number' || !Number.isFinite(obj.basedOn) || obj.basedOn < fallbackStateVersion) {
+  if (typeof obj.basedOn !== 'number' || !Number.isFinite(obj.basedOn)) {
     obj.basedOn = fallbackStateVersion;
   } else {
-    obj.basedOn = Math.round(obj.basedOn);
+    obj.basedOn = Math.max(0, Math.round(obj.basedOn));
   }
   if (typeof obj.say === 'string') {
     const s = obj.say.trim();
@@ -213,7 +216,7 @@ export function normalizeLlmAdvice(raw: unknown, fallbackStateVersion = 0): unkn
     if (typeof g.id === 'string' && g.id.trim()) {
       obj.gambit = {
         id: g.id.trim().slice(0, 16),
-        line: clipStr(g.line, LIMITS.lineLen, '博取额外赏金'),
+        line: clipStr(g.line, LIMITS.lineLen, '博取额外 CP'),
       };
     } else {
       delete obj.gambit;

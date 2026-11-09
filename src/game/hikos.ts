@@ -1,13 +1,13 @@
 // Hikos 宿主桥接（postMessage v1）。契约：接入说明 01_1b297d9c §1.5–1.7；宿主实现 krowworker web/hikos/src/addons/arcade.js（PR #1638）。
 // 游戏被宿主用 sandbox="allow-scripts" 的 iframe 嵌在 /arcade/tower-defense/：不透明源，没有 localStorage / cookie，所有状态只放内存。
-// 宿主 → 游戏：首帧前走 URL query（v skin accent bg ink theme lang），运行中走 hikos:context / hikos:visibility / hikos:size。
-// 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h}。消息里没有任何身份信息，只有展示类字段。
+// 宿主 → 游戏：首帧前走 URL query（v skin accent bg ink theme lang），运行中走 hikos:context / hikos:visibility / hikos:size / hikos:map / hikos:settle:reply。
+// 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h} · td:settle:request {…} · td:battle {…}。
 // 军师（任务 fb4d93bc，06 规格 §3）：游戏 → 宿主 td:advisor:request {reqId, kind, deadlineMs, stateVersion, snapshot, llm}；
 //   宿主 → 游戏 hikos:advisor:reply {reqId, ok, payload | error, provider, latencyMs}；hikos:context 可多带 advisor {enabled, provider}（只增不改）。
 //   宿主拿自己的凭据与路由去调模型；游戏只送极简决策快照与提示词，不碰端点与密钥。
 
-import { parseSpatialMap, type HostSpatialMap, type HostSpatialNode } from './spatialMap';
-export { parseSpatialMap, type HostSpatialMap, type HostSpatialNode };
+import { parseSpatialMap, type HostSpatialMap, type HostSpatialNode, type RoadPlan, type RoadSegment } from './spatialMap';
+export { parseSpatialMap, type HostSpatialMap, type HostSpatialNode, type RoadPlan, type RoadSegment };
 
 export const PROTOCOL = 1;
 
@@ -22,6 +22,29 @@ export interface HostAdvisorAgent {
   avatar?: string;
   color?: string;
   persona?: string;
+}
+
+export interface HostWalletInfo {
+  balanceCp: number | null;
+  netCp?: number;
+  wonCount?: number;
+  lostCount?: number;
+}
+
+export interface HostSettlementReply {
+  type: 'hikos:settle:reply';
+  v: number;
+  matchId: string;
+  ok: boolean;
+  outcome: 'won' | 'lost';
+  deltaCp: number;
+  appliedCp: number;
+  balanceCp: number | null;
+  netCp?: number;
+  wonCount?: number;
+  lostCount?: number;
+  idempotent?: boolean;
+  error?: { code: string; message: string };
 }
 
 export interface HostContext {
@@ -43,6 +66,8 @@ export interface HostContext {
   insitu?: boolean;
   /** 宿主空间皮肤地图的场景坐标与相机参数（v1 加法字段） */
   map?: HostSpatialMap | null;
+  /** 宿主账户 CP 钱包与塔防累计战绩（v1 加法字段） */
+  wallet?: HostWalletInfo | null;
 }
 
 export const DEFAULT_CONTEXT: HostContext = {
@@ -116,6 +141,18 @@ function parseAdvisor(v: unknown, prev: HostContext['advisor']): HostContext['ad
   return res;
 }
 
+function parseWallet(v: unknown, prev: HostContext['wallet']): HostContext['wallet'] {
+  if (v === undefined) return prev;
+  if (!v || typeof v !== 'object') return null;
+  const w = v as Record<string, unknown>;
+  const balanceCp = typeof w.balanceCp === 'number' && Number.isFinite(w.balanceCp) ? Math.round(w.balanceCp) : null;
+  const out: HostWalletInfo = { balanceCp };
+  if (typeof w.netCp === 'number' && Number.isFinite(w.netCp)) out.netCp = Math.round(w.netCp);
+  if (typeof w.wonCount === 'number' && Number.isFinite(w.wonCount)) out.wonCount = Math.max(0, Math.round(w.wonCount));
+  if (typeof w.lostCount === 'number' && Number.isFinite(w.lostCount)) out.lostCount = Math.max(0, Math.round(w.lostCount));
+  return out;
+}
+
 /** 合并一条 hikos:context（§1.6）：字段只增不改，缺的字段保留上一次的值。 */
 export function contextFromMessage(msg: unknown, prev: HostContext): HostContext {
   if (!msg || typeof msg !== 'object') return prev;
@@ -123,7 +160,8 @@ export function contextFromMessage(msg: unknown, prev: HostContext): HostContext
   const name = m.name && typeof m.name === 'object'
     ? { zh: String((m.name as Record<string, unknown>).zh ?? ''), en: String((m.name as Record<string, unknown>).en ?? '') }
     : prev.name;
-  return {
+  const nextWallet = parseWallet(m.wallet, prev.wallet);
+  const out: HostContext = {
     v: PROTOCOL,
     skin: 'skin' in m ? parseSkin(m.skin) : prev.skin,
     name,
@@ -137,6 +175,8 @@ export function contextFromMessage(msg: unknown, prev: HostContext): HostContext
     insitu: typeof m.insitu === 'boolean' ? m.insitu : (m.map && typeof m.map === 'object' ? true : prev.insitu),
     map: parseSpatialMap(m.map, prev.map ?? null),
   };
+  if (nextWallet !== undefined) out.wallet = nextWallet;
+  return out;
 }
 
 /**
@@ -162,6 +202,8 @@ export interface HostMessageHandlers {
   onAdvisorReply?: (msg: Record<string, unknown>) => void;
   /** 宿主代发军师的 SSE 流式增量（hikos:advisor:stream） */
   onAdvisorStream?: (msg: Record<string, unknown>) => void;
+  /** 宿主完成单局 CP 真实结算后的回包（hikos:settle:reply） */
+  onSettleReply?: (msg: HostSettlementReply) => void;
   /** 每条通过源校验的 hikos:* 消息（调试 / 宿主侧 test-arcade 读点用） */
   onAny?: (msg: Record<string, unknown>) => void;
 }
@@ -175,12 +217,12 @@ export interface HostBridge {
   state(s: GameState): void;
   exit(): void;
   resize(w: number, h: number): void;
-  /** 军师请求（td:advisor:request）；message.type 必须以 td: 开头，别的不发 */
+  /** 军师请求（td:advisor:request）/ 结算请求（td:settle:request）；message.type 必须以 td: 开头，别的不发 */
   send(message: Record<string, unknown>): void;
   dispose(): void;
 }
 
-/** 装一座桥：解析 query，挂 message 监听（只认 parent + 宿主源），暴露四种出站消息。 */
+/** 装一座桥：解析 query，挂 message 监听（只认 parent + 宿主源），暴露出站消息。 */
 export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}): HostBridge {
   const embedded = win.parent !== win;
   const origin = hostOrigin(win.location.search, win.location.origin);
@@ -219,6 +261,39 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
       handlers.onAdvisorReply?.(m as Record<string, unknown>);
     } else if (m.type === 'hikos:advisor:stream') {
       handlers.onAdvisorStream?.(m as Record<string, unknown>);
+    } else if (m.type === 'hikos:settle:reply') {
+      const sr = m as Record<string, unknown>;
+      const outcome = sr.outcome === 'lost' ? 'lost' : 'won';
+      const deltaCp = typeof sr.deltaCp === 'number' && Number.isFinite(sr.deltaCp) ? Math.round(sr.deltaCp) : (outcome === 'won' ? 10 : -10);
+      const appliedCp = typeof sr.appliedCp === 'number' && Number.isFinite(sr.appliedCp) ? Math.round(sr.appliedCp) : deltaCp;
+      const balanceCp = typeof sr.balanceCp === 'number' && Number.isFinite(sr.balanceCp) ? Math.round(sr.balanceCp) : null;
+      if (balanceCp !== null) {
+        context = {
+          ...context,
+          wallet: {
+            balanceCp,
+            ...(typeof sr.netCp === 'number' ? { netCp: Math.round(sr.netCp) } : {}),
+            ...(typeof sr.wonCount === 'number' ? { wonCount: Math.round(sr.wonCount) } : {}),
+            ...(typeof sr.lostCount === 'number' ? { lostCount: Math.round(sr.lostCount) } : {}),
+          },
+        };
+        bridge.context = context;
+      }
+      handlers.onSettleReply?.({
+        type: 'hikos:settle:reply',
+        v: PROTOCOL,
+        matchId: typeof sr.matchId === 'string' ? sr.matchId.slice(0, 128) : '',
+        ok: sr.ok === true,
+        outcome,
+        deltaCp,
+        appliedCp,
+        balanceCp,
+        ...(typeof sr.netCp === 'number' ? { netCp: Math.round(sr.netCp) } : {}),
+        ...(typeof sr.wonCount === 'number' ? { wonCount: Math.round(sr.wonCount) } : {}),
+        ...(typeof sr.lostCount === 'number' ? { lostCount: Math.round(sr.lostCount) } : {}),
+        ...(typeof sr.idempotent === 'boolean' ? { idempotent: sr.idempotent } : {}),
+        ...(sr.error && typeof sr.error === 'object' ? { error: { code: String((sr.error as Record<string, unknown>).code ?? 'ERROR'), message: String((sr.error as Record<string, unknown>).message ?? '') } } : {}),
+      });
     }
   };
   if (embedded) win.addEventListener('message', onMessage);
