@@ -223,3 +223,86 @@ test('独立页 ?advisor=/path：HTTP 代理通道（开发代理口径），回
   expect(posted).toHaveLength(1);
   expect(posted[0]).toMatchObject({ v: 1, kind: 'next-wave' });
 });
+
+test('嵌入 · 频道智能体扮演 + 大厅流式出题 + Pn() 按钮复位（任务 d9ad7e7a）', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const lobbyHostHtml = `<!DOCTYPE html><html><body style="margin:0">
+<div id="stage" style="width:960px;height:640px"><iframe id="game" sandbox="allow-scripts" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0"></iframe></div>
+<script>
+  const frame = document.getElementById('game');
+  window.__reqs = [];
+  const send = (m) => frame.contentWindow.postMessage(m, '*');
+  const AGENT = {
+    id: 'agent-jiangshang',
+    name: '姜尚',
+    title: '太公兵法',
+    avatar: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><polygon points='16,2 30,16 16,30 2,16' fill='%23356d73'/><text x='16' y='21' font-size='14' fill='white' text-anchor='middle'>姜</text></svg>",
+    color: '#356d73',
+    persona: '善布奇门阵法，主张稳守要冲、待机合围。'
+  };
+  addEventListener('message', (e) => {
+    if (e.source !== frame.contentWindow) return;
+    const m = e.data || {};
+    if (m.type === 'td:ready') {
+      send({
+        type: 'hikos:context', v: 1, skin: 'metropolis-riverside-3d', accent: '356d73', bg: 'e8ede7', ink: '354e52',
+        theme: 'day', lang: 'zh', reducedMotion: false,
+        advisor: { enabled: true, provider: 'hikos', agent: AGENT }
+      });
+    }
+    if (m.type === 'td:advisor:request') {
+      window.__reqs.push(m);
+      if (m.kind === 'level') {
+        setTimeout(() => send({ type: 'hikos:advisor:stream', v: 1, reqId: m.reqId, delta: '{"meta":{"theme":"渭水奇阵","description":"太公亲布雨夜伏击阵"}', chars: 52, provider: 'deepseek-flash' }), 60);
+        setTimeout(() => send({ type: 'hikos:advisor:stream', v: 1, reqId: m.reqId, delta: ',"towers":[...],"waves":[...]}', chars: 128, provider: 'deepseek-flash' }), 140);
+        // 第 3 轮或故意返回非法包让其回退以同时验证回退卡与按钮复位
+        setTimeout(() => send({ type: 'hikos:advisor:reply', v: 1, reqId: m.reqId, ok: false, error: { code: 'UPSTREAM', message: 'stream test done' }, provider: 'deepseek-flash', latencyMs: 220 }), 260);
+      } else {
+        const slot = (m.snapshot.slots || []).find((s) => s.open);
+        send({
+          type: 'hikos:advisor:reply', v: 1, reqId: m.reqId, ok: true, provider: 'deepseek-flash', latencyMs: 35,
+          payload: { v: 1, basedOn: m.stateVersion, say: '老夫观此波步卒将至，当守北路。', options: [{ id: 'a', title: '太公伏弩', why: '扼住咽喉。', moves: slot ? [{ slot: slot.id, tower: 'crossbow' }] : [] }], bet: { leaks: 0, line: '此阵必全歼敌军。' } }
+        });
+      }
+    }
+  });
+  frame.src = './?v=1&skin=metropolis-riverside-3d&accent=356d73&bg=e8ede7&ink=354e52&theme=day&lang=zh';
+</script></body></html>`;
+
+  await page.route('**/__lobby-stream-host.html', (route) => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: lobbyHostHtml }));
+  await page.goto('/__lobby-stream-host.html');
+  const el = await page.waitForSelector('#game');
+  const game = (await el.contentFrame())!;
+  await game.waitForSelector('#lobby', { state: 'visible' });
+
+  // 1) hikos:context 到达后，大厅明确署名频道智能体「姜尚 · 太公兵法」与人设，不再是「Hikos 宿主代理」
+  await expect(game.locator('#lobby-who')).toContainText('姜尚 · 太公兵法');
+  await expect(game.locator('#lobby-who')).not.toContainText('Hikos 宿主代理');
+  await expect(game.locator('#lobby-persona')).toContainText('善布奇门阵法');
+  await expect(game.locator('#lobby .lobby-adv-av')).toBeVisible();
+
+  // 2) 点击「让军师设计」期间，流式进展实时出现在 #lobby-stream
+  await game.click('#gen');
+  await expect(game.locator('#lobby-stream')).toBeVisible();
+  await expect(game.locator('#stream-stage')).toContainText('已流式输出');
+  await expect(game.locator('#stream-parsed')).toContainText('渭水奇阵');
+
+  // 3) 结果渲染出来后，#gen 按钮必须恢复为可点击的「让军师设计」，不再挂着 disabled 的「军师出题中…」
+  await expect(game.locator('#go')).toBeVisible({ timeout: 5000 });
+  const genBtn = game.locator('#gen');
+  await expect(genBtn).toBeEnabled();
+  await expect(genBtn).toHaveText('让军师设计');
+
+  // 4) 进入战局后，底部 HUD #advisor 卡片同样署名「姜尚（太公兵法）」并展示头像与人设，且请求携带 agent 与人设提示词
+  await game.click('#go');
+  await expect(game.locator('#advisor .adv-title')).toContainText('军师 · 姜尚（太公兵法）');
+  await expect(game.locator('#advisor .adv-avatar')).toBeVisible();
+  await expect(game.locator('#adv-badge')).toContainText('姜尚 · LLM · deepseek-flash');
+  const allReqs = await reqs(page);
+  expect(allReqs.length).toBeGreaterThanOrEqual(2);
+  expect((allReqs[0] as any).agent?.name).toBe('姜尚');
+  expect(allReqs[0].llm.messages[0].content).toContain('姜尚');
+  expect(allReqs[0].llm.messages[0].content).toContain('善布奇门阵法');
+  expect(errors).toEqual([]);
+});

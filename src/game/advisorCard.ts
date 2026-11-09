@@ -23,20 +23,49 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return n;
 };
 
+const isSafeAvatarUrl = (u?: string): boolean => !!u && (/^data:image\/(svg\+xml|png|jpeg|webp|gif)[;,]/i.test(u) || /^https?:\/\//i.test(u) || u.startsWith('/'));
+
 export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: ContentPack, lang: 'zh' | 'en', phase: string, h: CardHandlers) {
   const s = STR[lang];
   root.innerHTML = '';
   root.dataset.status = view.status;
   root.dataset.source = view.current?.source ?? 'none';
   root.dataset.provider = view.provider.kind;
+  const ag = view.provider.agent ?? null;
+  if (ag?.name) root.dataset.agent = ag.name; else delete root.dataset.agent;
   const towerName = (id: string) => pack.towers.find((t) => t.id === id)?.display_name ?? id;
 
   const head = el('div', 'adv-head');
-  head.append(el('span', 'adv-title', s.title));
+  if (ag?.name) {
+    if (isSafeAvatarUrl(ag.avatar)) {
+      const img = el('img', 'adv-avatar');
+      img.src = ag.avatar!;
+      img.alt = ag.name;
+      head.append(img);
+    } else {
+      const glyph = el('span', 'adv-avatar adv-avatar-glyph', [...ag.name][0] ?? '军');
+      if (ag.color) glyph.style.setProperty('--adv-c', ag.color);
+      head.append(glyph);
+    }
+  }
+  const titleText = ag?.name
+    ? (lang === 'zh' ? `${s.title} · ${ag.name}${ag.title ? `（${ag.title}）` : ''}` : `${s.title} · ${ag.name}${ag.title ? ` (${ag.title})` : ''}`)
+    : s.title;
+  const titleEl = el('span', 'adv-title', titleText);
+  if (ag?.persona) titleEl.title = ag.persona;
+  head.append(titleEl);
+
   const badge = el('span', `adv-badge ${view.current?.source === 'llm' ? 'llm' : 'local'}`);
-  if (view.status === 'thinking' && view.thinking) badge.textContent = `${view.provider.name} · ${s.thinking}`;
-  else if (view.current) badge.textContent = view.current.source === 'llm' ? `${s.llm} · ${view.current.provider ?? ''}${view.current.latencyMs != null ? ` · ${Math.round(view.current.latencyMs)}ms` : ''}` : `${s.local}${view.current.reason && view.current.reason !== 'NO_TRANSPORT' ? ` · ${view.current.reason}` : ''}`;
-  else badge.textContent = view.provider.name;
+  if (view.status === 'thinking' && view.thinking) {
+    const charsHint = view.thinking.streamChars ? ` · ${view.thinking.streamChars}${lang === 'zh' ? '字' : 'c'}` : '';
+    badge.textContent = `${view.provider.name} · ${s.thinking}${charsHint}`;
+  } else if (view.current) {
+    badge.textContent = view.current.source === 'llm'
+      ? `${ag?.name ? `${ag.name} · ` : ''}${s.llm} · ${view.current.provider ?? ''}${view.current.latencyMs != null ? ` · ${Math.round(view.current.latencyMs)}ms` : ''}`
+      : `${ag?.name ? `${ag.name} · ` : ''}${s.local}${view.current.reason && view.current.reason !== 'NO_TRANSPORT' ? ` · ${view.current.reason}` : ''}`;
+  } else {
+    badge.textContent = view.provider.name;
+  }
   badge.id = 'adv-badge';
   head.append(badge);
   head.append(el('span', 'adv-score', s.score(view.score.you, view.score.advisor)));
@@ -46,6 +75,10 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   head.append(auto);
   root.append(head);
 
+  if (ag?.persona) root.append(el('p', 'adv-persona', ag.persona));
+  if (view.status === 'thinking' && view.thinking?.streamText) {
+    root.append(el('p', 'adv-stream', view.thinking.streamText.slice(-160)));
+  }
   if (view.betLine) root.append(el('p', 'adv-betline', view.betLine));
   if (view.notice) root.append(el('p', 'adv-notice', view.notice));
   const cur = view.current;

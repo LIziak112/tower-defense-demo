@@ -3,9 +3,18 @@
 import { GUARDRAILS } from '../content/guardrails';
 import type { RawPack } from '../content/schema';
 import type { VError } from '../content/validate';
-import { LIMITS, type AdviceKind, type LlmMessage, type Snapshot } from './types';
+import { LIMITS, type AdviceKind, type AdvisorAgent, type LlmMessage, type Snapshot } from './types';
 
 export interface LlmPrompt { messages: LlmMessage[]; max_tokens: number }
+
+function formatPersonaPrefix(agent: AdvisorAgent | null | undefined, lang: 'zh' | 'en'): string {
+  if (!agent || !agent.name) return '';
+  const rolePart = agent.title ? (lang === 'zh' ? `（${agent.title}）` : ` (${agent.title})`) : '';
+  const personaPart = agent.persona ? `\n${agent.persona.trim()}` : '';
+  return lang === 'zh'
+    ? `【角色扮演】你现在由当前频道的在岗智能体「${agent.name}」${rolePart}扮演本局塔防军师。${personaPart}\n请始终以「${agent.name}」的身份、视角与语气在 say、why、bet.line 中献策。\n\n`
+    : `[Roleplay] You are roleplaying the tower-defense advisor as the active channel agent "${agent.name}"${rolePart}.${personaPart}\nSpeak in "${agent.name}"'s voice and persona in say, why, and bet.line.\n\n`;
+}
 
 const RULES_ZH = `你是一款塔防小游戏里的「军师」。玩家在一张固定路径的地图上放塔守基地，金币是唯一资源。
 你的任务不是替玩家找唯一最优解，而是给出 2–3 条**真正有取舍**的打法（比如：稳守 / 重拳 / 攒钱），每条说清收益与风险，让玩家做有趣的决定。
@@ -36,8 +45,8 @@ const KIND_HINT = {
   en: { 'next-wave': 'Build phase: the player is about to start the next wave. Advise on placement + make your bet (+ optional gambit).', tactical: 'Mid-wave: enemies are on the road. Give exactly one immediate suggestion (one option, ≤1 move), no bet, no gambit; if nothing fits, advise to hold.' },
 } as const;
 
-export function advicePrompt(kind: Exclude<AdviceKind, 'level'>, snapshot: Snapshot, lang: 'zh' | 'en' = 'zh'): LlmPrompt {
-  const rules = lang === 'zh' ? RULES_ZH : RULES_EN;
+export function advicePrompt(kind: Exclude<AdviceKind, 'level'>, snapshot: Snapshot, lang: 'zh' | 'en' = 'zh', agent?: AdvisorAgent | null): LlmPrompt {
+  const rules = formatPersonaPrefix(agent, lang) + (lang === 'zh' ? RULES_ZH : RULES_EN);
   const hint = KIND_HINT[lang][kind];
   return {
     messages: [
@@ -60,11 +69,13 @@ export interface LevelPromptInput {
   example: RawPack;
   assetIds: string[]; paletteIds: string[]; tilesetIds: string[];
   previous?: RawPack; errors?: VError[];
+  agent?: AdvisorAgent | null;
 }
 
 export function levelPrompt(input: LevelPromptInput, lang: 'zh' | 'en' = 'zh'): LlmPrompt {
   const g = GUARDRAILS;
-  const system = (lang === 'zh'
+  const prefix = formatPersonaPrefix(input.agent, lang);
+  const system = prefix + (lang === 'zh'
     ? `你是塔防小游戏的「军师」，负责按玩家一句话设计一张关卡（内容包）。只输出一个 JSON 对象，不要多余文字、不要 markdown 围栏。
 内容包形状：\n${PACK_SHAPE}
 硬约束（超出会被拒绝）：塔伤害 ${g.tower_damage.min}-${g.tower_damage.max}，塔间隔 ${g.tower_interval_ticks.min}-${g.tower_interval_ticks.max} tick，射程 ${g.tower_range_milli.min}-${g.tower_range_milli.max} milli（1000 = 一格），造价 ${g.tower_cost.min}-${g.tower_cost.max}；敌人血 ${g.enemy_max_health.min}-${g.enemy_max_health.max}，速度 ${g.enemy_speed.min}-${g.enemy_speed.max} milli/tick，赏金 ${g.enemy_gold.min}-${g.enemy_gold.max}；每波敌人总数 ${g.wave_total_enemies.min}-${g.wave_total_enemies.max}，波数 ${g.wave_count.min}-${g.wave_count.max}，路径折点 ${g.path_points.min}-${g.path_points.max}。

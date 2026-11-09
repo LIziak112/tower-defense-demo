@@ -3,7 +3,11 @@
 import { describe, it, expect } from 'vitest';
 import { checksum } from '../../src/runtime/index';
 import { DEFAULT_PACK } from '../../src/content/default';
-import { LIMITS, forbiddenKeysIn, slotCell, cellSlot } from '../../src/advisor/index';
+import A from '../../src/content/packs/changban_rain_night.json';
+import { LIMITS, forbiddenKeysIn, slotCell, cellSlot, HostChannel, ScriptedChannel } from '../../src/advisor/index';
+import { LlmContentProvider } from '../../src/ai/llm';
+import { runPipelineAsync } from '../../src/ai/pipeline';
+import { MockProvider } from '../../src/ai/mock';
 import { makeHarness, validAdvice } from './harness';
 
 const openSlot = (h: ReturnType<typeof makeHarness>) => h.session.snapshotNow()!.slots.find((x) => x.open)!.id;
@@ -234,5 +238,65 @@ describe('§5-6 出站请求干净 + 托管边界 + 押注结算', () => {
     expect(ev2.some((e) => e.type === 'gambit_rejected' && e.code === 'ALREADY_TAKEN')).toBe(true);
     const started = h.tick(1, [{ type: 'start_wave' }]).find((e) => e.type === 'wave_started');
     expect(started && started.type === 'wave_started' && started.total).toBe(Math.ceil(5 * 1.5));
+  });
+});
+
+describe('§5-7 频道在岗智能体扮演军师 + SSE 流式输出空闲超时续期（任务 d9ad7e7a）', () => {
+  it('HostChannel 与 AdvisorSession 接收频道智能体署名与人设，不再硬编码「Hikos 宿主代理」', () => {
+    const outbound: Record<string, unknown>[] = [];
+    let streamHandler: ((m: Record<string, unknown>) => void) | undefined;
+    const host = new HostChannel(
+      (m) => outbound.push(m),
+      () => {},
+      '频道智能体军师',
+      () => Date.now(),
+      (cb) => { streamHandler = cb; },
+    );
+    expect(host.name).not.toContain('Hikos 宿主代理');
+    host.setAvailable(true);
+    host.setAgent({ name: '姜尚', title: '兵家组长', avatar: 'data:image/svg+xml,<svg/>', persona: '以奇兵制胜，谋定而后动。' });
+    expect(host.name).toBe('姜尚 · 兵家组长');
+
+    const h = makeHarness();
+    h.session.setAgent({ name: '姜尚', title: '兵家组长', persona: '以奇兵制胜，谋定而后动。' });
+    h.tick(1);
+    const req = h.channel.sent[0];
+    expect(req.agent?.name).toBe('姜尚');
+    expect(req.llm.messages[0].content).toContain('姜尚');
+    expect(req.llm.messages[0].content).toContain('以奇兵制胜，谋定而后动。');
+    expect(h.session.view().provider.name).toBe('姜尚 · 兵家组长');
+    expect(h.session.view().provider.agent?.name).toBe('姜尚');
+
+    const streamed: number[] = [];
+    host.onStream((ev) => streamed.push(ev.chars ?? 0));
+    streamHandler?.({ reqId: 'r1', delta: '{"meta":', chars: 8 });
+    expect(streamed).toEqual([8]);
+    void outbound;
+  });
+
+  it('关卡生成 kind=level：SSE 流式增量重置空闲超时，总时长超 deadlineMs 仍正常完成不回退 Mock', async () => {
+    const ch = new ScriptedChannel();
+    ch.setAgent?.({ name: '图灵', title: '组长', persona: '严谨推演，逻辑严密。' });
+    ch.agent = { name: '图灵', title: '组长', persona: '严谨推演，逻辑严密。' };
+    // 将单次首包/空闲超时设为 80ms，但流式分 3 次推送（t=40ms, 90ms, 140ms），最终在 t=180ms（> 80ms * 2）返回完整关卡
+    const llm = new LlmContentProvider(ch, { deadlineMs: 80 });
+    expect(llm.name).toBe('图灵 · 组长');
+
+    const progressLog: { round: number; chars: number; text: string }[] = [];
+    ch.script = (req) => {
+      setTimeout(() => ch.injectStream({ reqId: req.reqId, delta: '{"meta":{"theme":"图灵星河"', chars: 24 }), 40);
+      setTimeout(() => ch.injectStream({ reqId: req.reqId, delta: ',"description":"流式推演中"}', chars: 48 }), 90);
+      setTimeout(() => ch.injectStream({ reqId: req.reqId, delta: ',"towers":[]}', chars: 62 }), 140);
+      return [{ reply: { ok: true, payload: A, provider: 'deepseek-flash' }, delayMs: 180 }];
+    };
+
+    const sum = await runPipelineAsync(llm, '长坂坡雨夜', 3, new MockProvider(), (p) => {
+      if (p.chars > 0) progressLog.push({ round: p.round, chars: p.chars, text: p.text });
+    });
+    expect(sum.is_mock).toBe(false);
+    expect(sum.ok).toBe(true);
+    expect(sum.provider).toBe('图灵 · 组长');
+    expect(progressLog.map((p) => p.chars)).toEqual([24, 48, 62]);
+    expect(progressLog[0].text).toContain('图灵星河');
   });
 });

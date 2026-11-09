@@ -19,22 +19,71 @@ export interface Summary {
   note?: string;
 }
 
-/** 异步 provider（真 LLM 走通道）：与 ContentProvider 同形，只是 generateContent 可以返回 Promise */
-export interface AsyncContentProvider { readonly name: string; readonly isMock: boolean; generateContent(input: { text: string; previous?: RawPack; errors?: VError[] }): RawPack | Promise<RawPack> }
+/** 关卡设计流式进度快照 */
+export interface LevelStreamProgress {
+  round: number;
+  maxRounds: number;
+  chars: number;
+  text: string;
+  stage: string;
+  provider?: string;
+}
+
+/** 异步 provider（真 LLM 走通道）：与 ContentProvider 同形，只是 generateContent 可以返回 Promise 并支持流式回调 */
+export interface AsyncContentProvider {
+  readonly name: string;
+  readonly isMock: boolean;
+  generateContent(input: { text: string; previous?: RawPack; errors?: VError[]; onStream?: (ev: { reqId: string; delta?: string; text?: string; chars?: number; stage?: string; provider?: string }) => void }): RawPack | Promise<RawPack>;
+}
 
 /**
- * 与 runPipeline 同一条链（generate → validate → ≤3 轮带错重试 → compile → dry-run），只是等得起 Promise。
+ * 与 runPipeline 同一条链（generate → validate → ≤3 轮带错重试 → compile → dry-run），只是等得起 Promise 并实时回传 SSE 流式进度。
  * provider 抛错（超时 / 断网 / 非 JSON）→ 整条换 fallbackProvider 重跑并在 note 里说明；没有 fallbackProvider 就抛出。
  */
-export async function runPipelineAsync(provider: AsyncContentProvider, text: string, maxRounds = 3, fallbackProvider?: ContentProvider): Promise<Summary> {
+export async function runPipelineAsync(
+  provider: AsyncContentProvider,
+  text: string,
+  maxRounds = 3,
+  fallbackProvider?: ContentProvider,
+  onProgress?: (p: LevelStreamProgress) => void,
+): Promise<Summary> {
   try {
-    let raw: unknown = await provider.generateContent({ text });
-    let errors: VError[] = []; let attempts = 0;
+    let attempts = 1;
+    onProgress?.({ round: 1, maxRounds, chars: 0, text: '', stage: '军师正在推演第 1 轮关卡设计…', provider: provider.name });
+    let raw: unknown = await provider.generateContent({
+      text,
+      onStream: (ev) => onProgress?.({
+        round: attempts,
+        maxRounds,
+        chars: ev.chars ?? (ev.text?.length ?? 0),
+        text: ev.text ?? ev.delta ?? '',
+        stage: ev.stage ?? `军师正在流式生成关卡（第 ${attempts}/${maxRounds} 轮）…`,
+        provider: ev.provider ?? provider.name,
+      }),
+    });
+    let errors: VError[] = [];
     for (attempts = 1; attempts <= maxRounds; attempts++) {
+      onProgress?.({ round: attempts, maxRounds, chars: 0, text: '', stage: `正在校验与沙盘预演（第 ${attempts}/${maxRounds} 轮）…`, provider: provider.name });
       const v = validatePack(raw);
       if (v.ok) return build(provider, text, v.pack, attempts, false, []);
       errors = v.errors;
-      if (attempts < maxRounds) raw = await provider.generateContent({ text, previous: raw as RawPack, errors });
+      if (attempts < maxRounds) {
+        const nextRound = attempts + 1;
+        onProgress?.({ round: nextRound, maxRounds, chars: 0, text: '', stage: `发现 ${errors.length} 处数值越界，军师正在第 ${nextRound}/${maxRounds} 轮修正…`, provider: provider.name });
+        raw = await provider.generateContent({
+          text,
+          previous: raw as RawPack,
+          errors,
+          onStream: (ev) => onProgress?.({
+            round: nextRound,
+            maxRounds,
+            chars: ev.chars ?? (ev.text?.length ?? 0),
+            text: ev.text ?? ev.delta ?? '',
+            stage: ev.stage ?? `军师正在流式修正关卡（第 ${nextRound}/${maxRounds} 轮）…`,
+            provider: ev.provider ?? provider.name,
+          }),
+        });
+      }
     }
     const fb = validatePack(A);
     if (!fb.ok) throw new Error('默认关卡自身未通过校验');

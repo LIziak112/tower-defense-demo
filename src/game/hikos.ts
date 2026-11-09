@@ -12,6 +12,15 @@ export type HostTheme = 'day' | 'night';
 export type HostLang = 'zh' | 'en';
 export type GameState = 'idle' | 'playing' | 'paused' | 'won' | 'lost';
 
+export interface HostAdvisorAgent {
+  id?: string;
+  name: string;
+  title?: string;
+  avatar?: string;
+  color?: string;
+  persona?: string;
+}
+
 export interface HostContext {
   v: number;
   /** 宿主皮肤 id（如 union-atlas-3d）；不在清单里或没给时为 null，用 accent/bg/ink 兜底 */
@@ -26,7 +35,7 @@ export interface HostContext {
   lang: HostLang;
   reducedMotion: boolean;
   /** 宿主能否代理军师请求（只有 hikos:context 带）；null = 宿主没说（按能代理处理，等它回） */
-  advisor: { enabled: boolean; provider: string | null } | null;
+  advisor: { enabled: boolean; provider: string | null; agent?: HostAdvisorAgent | null } | null;
 }
 
 export const DEFAULT_CONTEXT: HostContext = {
@@ -71,11 +80,31 @@ export function contextFromQuery(search: string): HostContext {
   };
 }
 
+function parseAdvisorAgent(raw: unknown): HostAdvisorAgent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const g = raw as Record<string, unknown>;
+  const name = typeof g.name === 'string' ? g.name.trim().slice(0, 48) : '';
+  if (!name) return null;
+  const out: HostAdvisorAgent = { name };
+  if (typeof g.id === 'string' && g.id.trim()) out.id = g.id.trim().slice(0, 64);
+  if (typeof g.title === 'string' && g.title.trim()) out.title = g.title.trim().slice(0, 48);
+  if (typeof g.avatar === 'string' && g.avatar.trim() && g.avatar.length <= 32768) out.avatar = g.avatar.trim();
+  if (typeof g.color === 'string' && parseHex(g.color)) out.color = parseHex(g.color)!;
+  if (typeof g.persona === 'string' && g.persona.trim()) out.persona = g.persona.trim().slice(0, 800);
+  return out;
+}
+
 function parseAdvisor(v: unknown, prev: HostContext['advisor']): HostContext['advisor'] {
   if (v === undefined) return prev;
   if (!v || typeof v !== 'object') return null;
   const a = v as Record<string, unknown>;
-  return { enabled: a.enabled === true, provider: typeof a.provider === 'string' && a.provider.length <= 64 ? a.provider : null };
+  const agent = 'agent' in a ? parseAdvisorAgent(a.agent) : (typeof a.name === 'string' ? parseAdvisorAgent(a) : prev?.agent);
+  const res: NonNullable<HostContext['advisor']> = {
+    enabled: a.enabled === true,
+    provider: typeof a.provider === 'string' && a.provider.length <= 64 ? a.provider : null,
+  };
+  if (agent !== undefined) res.agent = agent;
+  return res;
 }
 
 /** 合并一条 hikos:context（§1.6）：字段只增不改，缺的字段保留上一次的值。 */
@@ -118,6 +147,8 @@ export interface HostMessageHandlers {
   onSize?: (w: number, h: number) => void;
   /** 宿主代发军师回来的回包（hikos:advisor:reply）；配对与校验在 src/advisor/session.ts */
   onAdvisorReply?: (msg: Record<string, unknown>) => void;
+  /** 宿主代发军师的 SSE 流式增量（hikos:advisor:stream） */
+  onAdvisorStream?: (msg: Record<string, unknown>) => void;
   /** 每条通过源校验的 hikos:* 消息（调试 / 宿主侧 test-arcade 读点用） */
   onAny?: (msg: Record<string, unknown>) => void;
 }
@@ -165,6 +196,8 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
       if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) handlers.onSize?.(w, h);
     } else if (m.type === 'hikos:advisor:reply') {
       handlers.onAdvisorReply?.(m as Record<string, unknown>);
+    } else if (m.type === 'hikos:advisor:stream') {
+      handlers.onAdvisorStream?.(m as Record<string, unknown>);
     }
   };
   if (embedded) win.addEventListener('message', onMessage);
