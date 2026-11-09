@@ -1,8 +1,9 @@
+import { sanitizeLlmPack } from '../../src/content/sanitize';
 import { describe, it, expect } from 'vitest';
 import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
 import { createSpatialProjector, parseSpatialMap } from '../../src/game/spatialMap';
-import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice, sanitizeLlmPack } from '../../src/game/chatFormat';
+import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice } from '../../src/game/chatFormat';
 import { validatePack } from '../../src/content/validate';
 import { parseAdvice } from '../../src/advisor/types';
 import { DEFAULT_PACK } from '../../src/content/default';

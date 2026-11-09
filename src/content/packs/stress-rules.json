@@ -1,0 +1,6 @@
+{
+  "towers": 50,
+  "enemies": 150,
+  "enemy": { "hp": 100000000, "speed": 1 },
+  "attack": { "damage": 10, "range": 24000, "interval_ticks": 1 }
+}

@@ -37,7 +37,6 @@ function plans(snap: Snapshot, state: BattleState, lang: 'zh' | 'en'): Plan[] {
   const open = allSlots(state).filter((x) => x.open);
   const bestFor = (towerId: string, skip: Set<number>) => open.filter((x) => !skip.has(x.id)).sort((a, b) => (b.reach[towerId] ?? 0) - (a.reach[towerId] ?? 0) || a.id - b.id)[0];
   const out: Plan[] = [];
-  const nextTotal = (snap.wave.next ?? []).reduce((a, g) => a + g.n, 0);
   const nextReward = (snap.wave.next ?? []).reduce((a, g) => a + g.n * (snap.enemies.find((e) => e.id === g.type)?.reward ?? 0), 0);
 
   // a 稳守：最便宜的塔放覆盖最好的槽，钱够就再来一座
@@ -47,17 +46,17 @@ function plans(snap: Snapshot, state: BattleState, lang: 'zh' | 'en'): Plan[] {
     const cover = moves.map((m) => open.find((x) => x.id === m.slot)?.reach[cheapest.id] ?? 0).reduce((a, b) => a + b, 0);
     out.push({
       title: zh ? '稳守' : 'Steady', moves,
-      why: zh ? `${moves.length} 座${cheapest.name}压住覆盖最多的槽（共盖 ${cover} 格路），下一波 ${nextTotal} 只有的打。` : `${moves.length} ${cheapest.name}(s) on the best-covered slots (${cover} path cells); handles the ${nextTotal} coming.`,
+      why: zh ? `用 ${moves.length} 座${cheapest.name}守拐角，合计 ${cover} 格射界（含重叠）。` : `${moves.length} ${cheapest.name}(s) cover ${cover} path cells in total, counting overlap.`,
       risk: zh ? '火力平均，后面厚血敌人可能顶不住。' : 'Even firepower; tanky waves later may push through.',
     });
   }
-  // b 重拳：买得起的最高 dps 塔放最佳槽
-  const heavy = [...snap.towers].filter((t) => t.cost <= snap.gold).sort((a, b) => dps(b) - dps(a) || b.cost - a.cost)[0];
+  // b 重拳：用更高的单发伤害换取更少的落点。
+  const heavy = snap.towers.filter((t) => t.id !== cheapest?.id && t.cost <= snap.gold).sort((a, b) => b.dmg - a.dmg || b.cost - a.cost)[0];
   if (heavy && cheapest && heavy.id !== cheapest.id && open.length) {
     const s = bestFor(heavy.id, new Set());
     if (s) out.push({
       title: zh ? '重拳' : 'Heavy hand', moves: [{ slot: s.id, tower: heavy.id }],
-      why: zh ? `一座${heavy.name}（单发 ${heavy.dmg}）架在覆盖 ${s.reach[heavy.id]} 格的槽上，一击一个。` : `One ${heavy.name} (${heavy.dmg} per hit) on a slot covering ${s.reach[heavy.id]} cells: one shot, one kill.`,
+      why: zh ? `${heavy.name}单发 ${heavy.dmg} 伤害，守住 ${s.reach[heavy.id]} 格来路。` : `${heavy.name}: ${heavy.dmg} damage per hit, covering ${s.reach[heavy.id]} path cells.`,
       risk: zh ? `出手慢（${heavy.every}s 一发），人海波会被漏过去。` : `Slow (${heavy.every}s per shot); swarms will slip past.`,
     });
   }
@@ -66,8 +65,8 @@ function plans(snap: Snapshot, state: BattleState, lang: 'zh' | 'en'): Plan[] {
   out.push({
     title: zh ? '攒一手' : 'Save up', moves: [],
     why: zh
-      ? (nextNext ? `这波赏金 ${nextReward} 金，攒着下波一次上${towers[towers.length - 1]?.name ?? '大塔'}。` : `最后一波了，手里的 ${snap.gold} 金留着也没用——想清楚再花。`)
-      : (nextNext ? `This wave pays ${nextReward} gold; save for a ${towers[towers.length - 1]?.name ?? 'big tower'} next wave.` : `Last wave: unspent gold is worth nothing—spend with intent.`),
+      ? (nextNext ? `保留金币用于下波。全歼本波最多得 ${nextReward} 金赏金。` : '靠现有阵地打完最后一波。')
+      : (nextNext ? `Save for the next wave. Defeating every enemy pays ${nextReward} gold.` : 'Hold the last wave with the current defenses.'),
     risk: zh ? `现在不补塔，这波可能多漏几只（基地 ${snap.base.hp}/${snap.base.max}）。` : `No new towers now: more may leak (base ${snap.base.hp}/${snap.base.max}).`,
   });
   // 去重（同一组 moves 只留一条），最多 3 条
@@ -97,12 +96,21 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…'
 export function adviseLocal(kind: Exclude<AdviceKind, 'level'>, snap: Snapshot, state: BattleState, lang: 'zh' | 'en' = 'zh'): Advice {
   const ps = kind === 'tactical' ? tactical(snap, state, lang) : plans(snap, state, lang);
   const ids = ['a', 'b', 'c'] as const;
-  const options: AdviceOption[] = ps.map((p, i) => ({ id: ids[i], title: clip(p.title, 12), why: clip(p.why, 80), risk: p.risk ? clip(p.risk, 60) : undefined, moves: p.moves }));
+  const canSimulate = kind === 'next-wave' && snap.phase === 'build' && snap.wave.index < snap.wave.total;
+  const forecasts = canSimulate ? ps.map((p) => simulateWave(state, p.moves)) : [];
+  const options: AdviceOption[] = ps.map((p, i) => {
+    const forecast = forecasts[i];
+    const result = forecast?.result === 'lost' ? (lang === 'zh' ? '预演：基地失守。' : 'Forecast: base falls. ')
+      : forecast?.result === 'cleared' ? (lang === 'zh' ? `预演：漏 ${forecast.leaks} 只。` : `Forecast: ${forecast.leaks} leaks. `) : '';
+    return { id: ids[i], title: clip(p.title, 12), why: clip(result + p.why, 80), risk: p.risk ? clip(p.risk, 60) : undefined, moves: p.moves };
+  });
   const advice: Advice = { v: 1, basedOn: snap.stateVersion, options, say: SAY[lang][snap.wave.index % SAY[lang].length] };
   if (kind === 'next-wave' && snap.phase === 'build' && snap.wave.index < snap.wave.total) {
-    const sim = simulateWave(state, options[0].moves);
-    const n = sim.leaks;
-    advice.bet = { leaks: n, line: lang === 'zh' ? (n === 0 ? '按 a 打，这波一只都不漏。' : `按 a 打，这波会漏 ${n} 只。`) : (n === 0 ? 'Play a: nothing leaks this wave.' : `Play a: ${n} will leak this wave.`) };
+    const sim = forecasts[0];
+    if (sim.result === 'cleared') {
+      const n = sim.leaks;
+      advice.bet = { leaks: n, line: lang === 'zh' ? `按 A 布防，押这波漏 ${n} 只。` : `With plan A, I wager ${n} leaks.` };
+    }
     if (snap.gambit.offers.length && snap.gambit.taken === null && snap.wave.index >= 1) {
       const id = GAMBIT_IDS[snap.wave.index % GAMBIT_IDS.length];
       const g = GAMBITS[id];

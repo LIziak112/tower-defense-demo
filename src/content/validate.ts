@@ -46,6 +46,7 @@ export function validatePack(input: unknown): ValidateResult {
   // Layer 2: semantic
   const dupe = (arr: { id: string }[], base: string) => { const s = new Set<string>(); arr.forEach((x, i) => { if (s.has(x.id)) errors.push({ code: 'DUPLICATE_ID', path: `/${base}/${i}/id`, actual: x.id, message: `id ${x.id} 重复了` }); s.add(x.id); }); };
   dupe(p.towers, 'towers'); dupe(p.enemies, 'enemies');
+  p.towers.forEach((t, i) => dupe(t.branch_upgrades ?? [], `towers/${i}/branch_upgrades`));
   const pres = (pr: { asset_id: string; palette_id: string }, base: string) => {
     if (!ASSET_IDS.has(pr.asset_id)) errors.push({ code: 'UNKNOWN_ASSET', path: `${base}/asset_id`, actual: pr.asset_id, allowed: [...ASSET_IDS], message: `素材 ${pr.asset_id} 不在 assets.json 清单里` });
     if (!PALETTES.has(pr.palette_id)) errors.push({ code: 'UNKNOWN_PALETTE', path: `${base}/palette_id`, actual: pr.palette_id, allowed: [...PALETTES], message: `色板 ${pr.palette_id} 不在 assets.json 清单里` });

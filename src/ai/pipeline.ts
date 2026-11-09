@@ -7,7 +7,7 @@ import type { ContentPack } from '../runtime/types';
 import type { RawPack } from '../content/schema';
 import type { ContentProvider } from './provider';
 import { parseKeywords } from './mock';
-import A from '../content/packs/changban_rain_night.json';
+import { openingRaw } from '../content/opening';
 
 export interface Summary {
   ok: boolean; fallback: boolean; provider: string; is_mock: boolean; attempts: number;
@@ -85,7 +85,7 @@ export async function runPipelineAsync(
         });
       }
     }
-    const fb = validatePack(A);
+    const fb = validatePack(openingRaw());
     if (!fb.ok) throw new Error('默认关卡自身未通过校验');
     return build(provider, text, fb.pack, maxRounds, true, errors);
   } catch (e) {
@@ -106,7 +106,7 @@ export function runPipeline(provider: ContentProvider, text: string, maxRounds =
     errors = v.errors;
     if (attempts < maxRounds) raw = provider.generateContent({ text, previous: raw as RawPack, errors });
   }
-  const fb = validatePack(A);
+  const fb = validatePack(openingRaw());
   if (!fb.ok) throw new Error('默认关卡自身未通过校验');
   return build(provider, text, fb.pack, maxRounds, true, errors);
 }
@@ -115,7 +115,7 @@ export function runPipeline(provider: ContentProvider, text: string, maxRounds =
 export function loadPackOrFallback(input: unknown, provider: ContentProvider): Summary {
   const v = validatePack(input);
   if (v.ok) return build(provider, '（导入的内容包）', v.pack, 1, false, []);
-  const fb = validatePack(A);
+  const fb = validatePack(openingRaw());
   if (!fb.ok) throw new Error('默认关卡自身未通过校验');
   return build(provider, '（导入的内容包）', fb.pack, 1, true, v.errors);
 }

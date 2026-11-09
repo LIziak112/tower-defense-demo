@@ -14,7 +14,14 @@
     "Attack": {
      "damage": 15,
      "range_milli": 2500,
-     "interval_ticks": 20
+     "interval_ticks": 20,
+     "projectile": {
+      "type": "ARC",
+      "ticks": 5,
+      "height": 310
+     },
+     "crit_percent": 8,
+     "crit_multiplier": 1.5
     },
     "Targeting": {
      "mode": "first_on_path"
@@ -26,6 +33,9 @@
      "asset_id": "tower_crossbow_01",
      "palette_id": "ink_night"
     }
+   },
+   "damage_vs_armor": {
+    "轻甲": 1.15
    }
   },
   {
@@ -38,7 +48,12 @@
     "Attack": {
      "damage": 45,
      "range_milli": 3500,
-     "interval_ticks": 60
+     "interval_ticks": 60,
+     "projectile": {
+      "type": "ARC",
+      "ticks": 10,
+      "height": 850
+     }
     },
     "Targeting": {
      "mode": "first_on_path"
@@ -50,6 +65,9 @@
      "asset_id": "tower_catapult_01",
      "palette_id": "ink_night"
     }
+   },
+   "damage_vs_armor": {
+    "重甲": 1.25
    }
   },
   {
@@ -62,7 +80,12 @@
     "Attack": {
      "damage": 4,
      "range_milli": 1500,
-     "interval_ticks": 6
+     "interval_ticks": 6,
+     "on_hit": {
+      "type": "ARMOR_SHRED",
+      "value": 2,
+      "duration_ticks": 90
+     }
     },
     "Targeting": {
      "mode": "first_on_path"
@@ -74,6 +97,109 @@
      "asset_id": "tower_fire_01",
      "palette_id": "ink_night"
     }
+   },
+   "damage_vs_armor": {
+    "轻甲": 1.1
+   }
+  },
+  {
+   "id": "arcane",
+   "display_name": "术士塔",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 24,
+     "range_milli": 2800,
+     "interval_ticks": 27,
+     "projectile": {
+      "type": "HOMING",
+      "ticks": 35,
+      "speed": 260,
+      "turn_rate": 0.25
+     }
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 95
+    },
+    "Presentation": {
+     "asset_id": "tower_poison_01",
+     "palette_id": "ink_night"
+    }
+   },
+   "levels": [
+    {
+     "damage": 35,
+     "range": 3000,
+     "interval_ticks": 25,
+     "upgrade_cost": 50
+    }
+   ],
+   "branch_upgrades": [
+    {
+     "id": "elemental_overload",
+     "name": "破甲秘术",
+     "level": {
+      "damage": 40,
+      "range": 3200,
+      "interval_ticks": 22,
+      "upgrade_cost": 85,
+      "on_hit": {
+       "type": "ARMOR_SHRED",
+       "value": 5,
+       "duration_ticks": 90
+      }
+     }
+    },
+    {
+     "id": "arcane_sniper",
+     "name": "长程咒矢",
+     "level": {
+      "damage": 58,
+      "range": 4600,
+      "interval_ticks": 28,
+      "upgrade_cost": 95
+     }
+    }
+   ],
+   "damage_vs_armor": {
+    "重甲": 1.2
+   }
+  },
+  {
+   "id": "beam",
+   "display_name": "照魂镜",
+   "components": {
+    "Health": {
+     "max": 100
+    },
+    "Attack": {
+     "damage": 9,
+     "range_milli": 3200,
+     "interval_ticks": 33,
+     "projectile": {
+      "type": "BEAM",
+      "ticks": 21,
+      "interval_ticks": 6
+     }
+    },
+    "Targeting": {
+     "mode": "first_on_path"
+    },
+    "Buildable": {
+     "cost": 125
+    },
+    "Presentation": {
+     "asset_id": "tower_stone_01",
+     "palette_id": "ink_night"
+    }
+   },
+   "damage_vs_armor": {
+    "无甲": 1.15
    }
   }
  ],
@@ -97,6 +223,11 @@
     "Presentation": {
      "asset_id": "enemy_foot_01",
      "palette_id": "ink_night"
+    },
+    "Defense": {
+     "armor": 0,
+     "armor_type": "轻甲",
+     "immunities": []
     }
    }
   },
@@ -119,6 +250,11 @@
     "Presentation": {
      "asset_id": "enemy_cavalry_01",
      "palette_id": "ink_night"
+    },
+    "Defense": {
+     "armor": 0,
+     "armor_type": "无甲",
+     "immunities": []
     }
    }
   },
@@ -141,6 +277,13 @@
     "Presentation": {
      "asset_id": "enemy_heavy_01",
      "palette_id": "ink_night"
+    },
+    "Defense": {
+     "armor": 3,
+     "armor_type": "重甲",
+     "immunities": [
+      "ARMOR_SHRED"
+     ]
     }
    }
   }
@@ -445,5 +588,12 @@
     }
    ]
   }
- ]
+ ],
+ "wave_rules": {
+  "prep_ticks": 900,
+  "gold_per_second": 1,
+  "cooldown_ticks_per_second": 2,
+  "build_cooldown_ticks": 15
+ },
+ "difficulty": 1
 }

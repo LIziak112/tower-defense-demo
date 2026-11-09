@@ -19,33 +19,36 @@ export type Palette = {
 
 export const PALETTES: Record<string, Palette> = {
   default: {
-    bg: '#1b2430',
-    path: '#5a4a36',
-    pathAlt: '#4c3f2d',
-    grid1: '#26323f',
-    grid2: '#2b3846',
-    base: '#d8b45a',
-    shot: '#ffe9a0',
-    text: '#ffffff'
+    bg: '#111920',
+    paper: '#1e2b34',
+    hair: '#41515a',
+    accent: '#f1cf8d',
+    path: 'hsl(192 16% 18%)',
+    pathAlt: 'hsl(192 16% 15%)',
+    grid1: 'hsl(192 16% 12%)',
+    grid2: 'hsl(192 16% 12%)',
+    base: '#e9c785',
+    shot: '#fff0c8',
+    text: '#f2eee4'
   },
   neon: {
     bg: '#090a0f',
-    path: '#160029',
-    pathAlt: '#1a0033',
-    grid1: '#0d0d1a',
-    grid2: '#121224',
+    path: 'hsl(220 22% 18%)',
+    pathAlt: 'hsl(220 22% 15%)',
+    grid1: 'hsl(220 22% 12%)',
+    grid2: 'hsl(220 22% 12%)',
     base: '#00ffcc',
-    shot: '#ff00ff',
+    shot: '#ffd9fb',
     text: '#00ffff'
   },
   retro: {
     bg: '#2b2b2b',
-    path: '#a3a3a3',
-    pathAlt: '#8e8e8e',
-    grid1: '#3c3c3c',
-    grid2: '#333333',
+    path: 'hsl(42 14% 18%)',
+    pathAlt: 'hsl(42 14% 15%)',
+    grid1: 'hsl(42 14% 12%)',
+    grid2: 'hsl(42 14% 12%)',
     base: '#ffeb3b',
-    shot: '#ff5722',
+    shot: '#ffe2c9',
     text: '#ffffff'
   }
 };

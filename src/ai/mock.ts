@@ -1,5 +1,5 @@
 // Mock 军师（计划书 §5.3 / §7）：关键词 → 模板包 + 参数调制；重试时按错误 path 把越界值夹回区间。
-import A from '../content/packs/changban_rain_night.json';
+import { openingRaw } from '../content/opening';
 import B from '../content/packs/swamp_miasma.json';
 import type { RawPack } from '../content/schema';
 import type { VError } from '../content/validate';
@@ -66,7 +66,7 @@ export class MockProvider implements ContentProvider {
   generateContent(input: GenerateInput): RawPack {
     if (input.previous && input.errors?.length) return clampByErrors(input.previous, input.errors);
     const m = parseKeywords(input.text);
-    return modulate((m.theme === 'B' ? B : A) as RawPack, m, input.text);
+    return modulate(m.theme === 'B' ? B as RawPack : openingRaw(), m, input.text);
   }
 }
 export { G as GUARDRAILS_FOR_PROMPT };

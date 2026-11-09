@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -p . && vite build",
     "preview": "vite preview",
+    "desktop": "npm run build && electron desktop/main.cjs",
+    "test:desktop": "node tests/desktop/smoke.mjs",
+    "test:release": "tsc -p . && vite build --sourcemap && node tests/desktop/release.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p .",
     "advisor:proxy": "node tools/advisor-proxy.cjs"
@@ -16,6 +19,7 @@
     "@types/node": "^22.20.5",
     "@typescript-eslint/eslint-plugin": "^8.72.1",
     "@typescript-eslint/parser": "^8.72.1",
+    "electron": "^45.2.3",
     "eslint": "^8.57.1",
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-react": "^7.37.5",
