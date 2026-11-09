@@ -878,6 +878,25 @@ export interface SpatialDrawOptions {
   settlementText?: string;
 }
 
+
+// 几何图元去扁平化辅助函数
+function fillWithPolish(ctx: CanvasRenderingContext2D, fillStyle: string, strokeStyle: string, scale: number = 1.0) {
+  ctx.fillStyle = fillStyle;
+  ctx.fill();
+  
+  ctx.lineWidth = 2 * scale;
+  ctx.strokeStyle = strokeStyle;
+  ctx.stroke();
+
+  // 内部高光块 (简化模拟左上角高光)
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.translate(-5 * scale, -5 * scale);
+  ctx.fill();
+  ctx.restore();
+}
+
 export function drawSpatialBattlefield(
   ctx: CanvasRenderingContext2D,
   state: BattleState,
@@ -1326,6 +1345,13 @@ export function drawSpatialBattlefield(
   for (const tw of state.towers) {
     const def = pack.towers.find((d) => d.id === tw.def)!;
     const center = proj.cellToScreen(tw.cx + 0.5, tw.cy + 0.5);
+    // 闲置塔身呼吸缩放
+    const isIdle = !opts.shots?.some(s => s.towerId === tw.iid);
+    const breatheScale = isIdle ? 1 + Math.sin(opts.now * 0.0025) * 0.03 : 1;
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.scale(breatheScale, breatheScale);
+    ctx.translate(-center.x, -center.y);
     const towerColor = def.color ?? accent;
     const baseRad = Math.max(11, proj.cellPx * 0.26);
     const lift = Math.max(7, proj.cellPx * 0.18);
@@ -1534,6 +1560,7 @@ export function drawSpatialBattlefield(
     ctx.textBaseline = 'middle';
     ctx.fillText(def.display_name[0], turretX, turretY - 1);
     ctx.restore();
+    ctx.restore(); // for breathe scale
   }
 
   // 8. 复用皮肤原生车辆与行人模型充当小兵 + 叠加战局特效（脚底脉冲光环 + 行军流光尾迹 + 战局信标 + 受击闪白 Hit-flash，大厅 #25801 ② / #26153 ②）
@@ -1568,7 +1595,28 @@ export function drawSpatialBattlefield(
     const modelKind = getMinionModelKind(def, proj.hostMap?.skin);
     const r = Math.max(7, proj.cellPx * 0.18);
     const pulse = 1 + Math.sin(opts.now * 0.008 + e.iid * 1.3) * 0.12;
+    
+    // 伪2.5D高度偏移软阴影
     ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.beginPath();
+    const isFlying = def.tags?.includes('flying');
+    if (isFlying) {
+      ctx.ellipse(pt.x + 24, pt.y + 24, r * 0.8, r * 0.8 * 0.6, 0, 0, Math.PI * 2);
+    } else {
+      ctx.ellipse(pt.x, pt.y + r * 0.35, r, r * 0.6, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    ctx.restore();
+    
+    ctx.save();
+    
+    // 移动中的敌人附带正负 4 度的左右摇摆
+    const wobble = Math.sin(opts.now * 0.015 + e.iid) * (4 * Math.PI / 180);
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(wobble);
+    ctx.translate(-pt.x, -pt.y);
+
 
     // (8.1) 特效 ①：行军尾迹流光（Directional Wake Trail）—— 区分战局小兵与静态场景
     for (let k = 1; k <= 3; k++) {
