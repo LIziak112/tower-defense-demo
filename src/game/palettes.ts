@@ -7,6 +7,14 @@ export type Palette = {
   base: string;
   shot: string;
   text: string;
+  /** 以下是 Hikos 皮肤（skins.ts）带的扩展字段；内置三套没有，渲染时按旧配色兜底 */
+  accent?: string;
+  paper?: string;
+  ink?: string;
+  hair?: string;
+  tower?: string;
+  ok?: string;
+  danger?: string;
 };
 
 export const PALETTES: Record<string, Palette> = {

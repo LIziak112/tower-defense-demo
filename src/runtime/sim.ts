@@ -4,6 +4,7 @@
 // -> cleanup dying/escaped -> win/loss (loss first) -> tick+1.
 import type { BattleState, Command, ContentPack, EnemyInst, GameEvent, TowerInst, Cell } from './types';
 import { seedState } from './rng';
+import { GAMBITS, gambitBonus, isGambitId } from './gambit';
 
 export const TICKS_PER_SECOND = 30;
 export const CELL = 1000; // milli-cell
@@ -52,6 +53,7 @@ export function createBattle(pack: ContentPack, seed: number): BattleState {
     leaks: 0,
     pack,
     path_len: pathLength(pack.map.path),
+    gambit: null,
   };
 }
 
@@ -63,23 +65,43 @@ export function cloneState(s: BattleState): BattleState {
     towers: s.towers.map((t) => ({ ...t })),
     enemies: s.enemies.map((e) => ({ ...e })),
     occupied: s.occupied.slice(),
+    gambit: s.gambit ? { ...s.gambit } : null,
   };
 }
 
 function scheduleWave(s: BattleState, ev: GameEvent[]) {
   const wave = s.pack.waves[s.wave_index];
+  // 变招只作用于它被接下时的那一波（gambit.wave === 当前 wave_index）；没接或接的是别的波 → 倍率全 1，行为与无变招完全一致
+  const g0 = s.gambit && s.gambit.wave === s.wave_index ? GAMBITS[s.gambit.id] : null;
   let at = s.tick; // spawned this tick (pending) -> active next tick
   let total = 0;
   for (const g of wave.groups) {
-    for (let i = 0; i < g.count; i++) {
-      s.spawn_queue.push({ enemy_id: g.enemy_id, at_tick: at });
-      at += g.interval_ticks;
+    const count = g0 ? Math.ceil(g.count * g0.count_mul) : g.count;
+    const interval = g0 ? Math.max(1, Math.round(g.interval_ticks * g0.interval_mul)) : g.interval_ticks;
+    for (let i = 0; i < count; i++) {
+      const plan: BattleState['spawn_queue'][number] = { enemy_id: g.enemy_id, at_tick: at };
+      if (g0 && g0.hp_mul !== 1) plan.hp_mul = g0.hp_mul;
+      s.spawn_queue.push(plan);
+      at += interval;
       total++;
     }
   }
   s.wave_index++;
   s.phase = 'wave';
   ev.push({ type: 'wave_started', wave: s.wave_index, total });
+}
+
+/** 变招：只在建造期、还有下一波、本建造期没接过时成立；成立即刻加金币，波次改动在 scheduleWave 里兑现。 */
+function applyGambit(s: BattleState, c: Extract<Command, { type: 'gambit' }>, ev: GameEvent[]) {
+  const reject = (code: string, message: string) => ev.push({ type: 'gambit_rejected', code, message, id: String(c.id) });
+  if (!isGambitId(c.id)) return reject('UNKNOWN_GAMBIT', `没有这张变招：${String(c.id)}`);
+  if (s.phase !== 'build') return reject('NOT_BUILD_PHASE', '只能在布防期接变招');
+  if (s.wave_index >= s.pack.waves.length) return reject('NO_MORE_WAVES', '没有下一波了');
+  if (s.gambit && s.gambit.wave === s.wave_index) return reject('ALREADY_TAKEN', '这一波已经接过变招了');
+  const bonus = gambitBonus(s.pack, s.wave_index, c.id);
+  s.gambit = { wave: s.wave_index, id: c.id, bonus };
+  s.gold += bonus;
+  ev.push({ type: 'gambit_accepted', id: c.id, wave: s.wave_index, bonus });
 }
 
 /** Atomic build: all checks first, then mutate. Any failure => no gold spent, no cell taken. */
@@ -119,6 +141,8 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
       if (s.phase !== 'build') ev.push({ type: 'wave_rejected', code: 'WAVE_IN_PROGRESS', message: '本波尚未结束' });
       else if (s.wave_index >= pack.waves.length) ev.push({ type: 'wave_rejected', code: 'NO_MORE_WAVES', message: '没有更多波次' });
       else scheduleWave(s, ev);
+    } else if (c.type === 'gambit') {
+      applyGambit(s, c, ev);
     } else if (c.type === 'debug_add_gold') {
       s.gold += c.amount;
     } else if (c.type === 'debug_next_wave') {
@@ -133,7 +157,8 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
     for (const p of due) {
       const def = pack.enemies.find((d) => d.id === p.enemy_id)!;
       const pos = positionAt(pack.map.path, 0);
-      const e: EnemyInst = { iid: s.next_iid++, def: def.id, hp: def.hp, progress: 0, x: pos.x, y: pos.y, life: 'pending' };
+      const hp = p.hp_mul ? Math.ceil(def.hp * p.hp_mul) : def.hp;   // 变招「铁甲」：出生时加血，其余路径不变
+      const e: EnemyInst = { iid: s.next_iid++, def: def.id, hp, progress: 0, x: pos.x, y: pos.y, life: 'pending' };
       s.enemies.push(e);
       ev.push({ type: 'enemy_spawned', iid: e.iid, enemy_id: def.id });
     }
