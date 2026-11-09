@@ -357,3 +357,67 @@ test('大厅 #26153：四款皮肤文化设定命名、专属攻防打击动效+
   expect(vfxReduced.hitStopping).toBe(false);
   expect(vfxReduced.stats.screenShakes).toBe(shakesBeforeReduced);
 });
+
+test('大厅 #26188 / #26210：顶栏避让与专属图标徽章、真实CP同步去990兜底、Retina DPR高清渲染、1000关战役与6兵种、环城路网拓扑及10局内存释放', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 856 });
+  const hostHtml = `<!DOCTYPE html><html><body style="margin:0">
+<div id="stage" style="width:1440px;height:856px"><iframe id="game" sandbox="allow-scripts" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0"></iframe></div>
+<script>
+  const frame = document.getElementById('game');
+  window.__send = (m) => frame.contentWindow.postMessage(m, '*');
+  frame.src = './?v=1&skin=gothic-cathedral-3d&accent=e4c596&bg=182333&ink=e6e1da&theme=night&lang=zh&insitu=1&debug=1';
+</script></body></html>`;
+
+  await page.route('**/__campaign-host.html', (route) => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: hostHtml }));
+  await page.goto('/__campaign-host.html');
+  const el = await page.waitForSelector('#game');
+  const game = (await el.contentFrame())!;
+  await game.waitForSelector('#board', { state: 'visible' });
+
+  // 推送真实大额钱包余额 933474663 CP 与同心环城地图
+  await page.evaluate(() => (window as any).__send({
+    type: 'hikos:context', v: 1, skin: 'gothic-cathedral-3d', accent: 'e4c596', bg: '182333', ink: 'e6e1da', theme: 'night', lang: 'zh',
+    insitu: true,
+    wallet: { balanceCp: 933474663, netCp: 0, wonCount: 0, lostCount: 0 },
+    map: {
+      skin: 'gothic-cathedral-3d', layout: 'concentric-town', w: 1440, h: 856,
+      azimuth: -2.55, pitch: 0.65, zoom: 1.0,
+      home: { key: 'home', kind: 'landmark', label: '圣堂主座', x: 740, y: 430 },
+      spawnBuilding: { key: 'belfry', kind: 'entity', label: '外环钟楼门', x: 460, y: 290 },
+      baseBuilding: { key: 'home', kind: 'landmark', label: '圣堂主座', x: 740, y: 430 },
+      ambientTrafficCleared: true,
+      landmarks: [{ key: 'home', kind: 'landmark', label: '圣堂主座', x: 740, y: 430 }],
+      nodes: [{ key: 'belfry', kind: 'entity', label: '外环钟楼门', x: 460, y: 290 }],
+    },
+  }));
+
+  await expect(game.locator('#td-campaign-level')).toContainText('1/1000');
+  await expect(game.locator('#td-cp-settlement')).toContainText('933474663 CP');
+
+  // 结算负局：验证真实余额 933474663 - 10 = 933474653 CP（绝不出现 990 CP）
+  const lossSettle = await game.evaluate(() => (window as any).__td.settleNow('lost'));
+  expect(lossSettle.balanceCp).toBe(933474653);
+  await expect(game.locator('#td-cp-settlement')).toContainText('933474653 CP');
+  await expect(game.locator('#td-cp-settlement')).not.toContainText('990 CP');
+
+  // 推进到第 2 关战役：验证 6 种兵种、同心环城真实路网折点数 >= 12、终点锚定 home
+  const st2 = await game.evaluate(() => (window as any).__td.startCampaignLevel(2, 'gothic-cathedral-3d'));
+  expect(st2.level).toBe(2);
+  expect(st2.maxLevel).toBe(1000);
+  expect(st2.enemyTypes).toBeGreaterThanOrEqual(6);
+  await expect(game.locator('#td-campaign-level')).toContainText('2/1000');
+
+  const audit = await game.evaluate(() => ({
+    spatial: (window as any).__td.spatial,
+    balance: (window as any).__td.runBalanceAudit(),
+    mem: (window as any).__td.runMemoryBenchmark(10),
+    assets3d: (window as any).__td.assets3d,
+  }));
+  expect(audit.spatial.waypoints.length).toBeGreaterThanOrEqual(12);
+  expect(audit.spatial.roadPlan.endBuilding.key).toBe('home');
+  expect(audit.balance.stages).toHaveLength(3);
+  expect(audit.balance.stages.every((s: any) => s.reasonablePlacement.result === 'won' && s.poorPlacement.result === 'lost')).toBe(true);
+  expect(audit.mem.rounds).toBe(10);
+  expect(audit.mem.allZeroAfterCleanup).toBe(true);
+  expect(audit.assets3d).toHaveLength(4);
+});

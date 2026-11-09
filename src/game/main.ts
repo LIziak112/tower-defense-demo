@@ -28,13 +28,18 @@ import {
 import { cleanTechTerms, escHtml, extractNaturalAdvisorSpeech } from './chatFormat';
 import {
   buildCulturalMappingTable,
+  CAMPAIGN_MAX_LEVEL,
+  CAMPAIGN_SKIN_ROTATION,
   computeCounterPreview,
+  generateCampaignPack,
   getCulturalLexicon,
+  getSkin3dAssetManifest,
   localizePackForSkin,
   replaceAncientTerms,
   type CrisisAffixSpec,
   type EdictOptionSpec,
 } from './culturalThemes';
+import { dryRun } from '../content/dryrun';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
@@ -90,17 +95,19 @@ let lang = bridge.context.lang;
 
 // 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切；彻底去除“金币”概念，统一使用 CP（大厅 #25804 ④）
 const STR = {
-  zh: { base: '基地', gold: 'CP', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…', wallet: '账户' },
-  en: { base: 'Base', gold: 'CP', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…', wallet: 'Wallet' },
+  zh: { base: '基地', gold: 'CP', wave: '波次', level: '关卡', nextLevel: '下一关', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…', wallet: '账户' },
+  en: { base: 'Base', gold: 'CP', wave: 'Wave', level: 'Stage', nextLevel: 'Next Stage', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…', wallet: 'Wallet' },
 } as const;
 const t = (k: keyof typeof STR.zh) => STR[lang][k];
 
 // 单局 CP 结算量级（大厅 #25804 ④：胜利 +10 CP，失败 -10 CP）
 export const MATCH_WIN_CP = 10;
 export const MATCH_LOSS_CP = -10;
+let campaignLevel = Math.max(1, Math.min(CAMPAIGN_MAX_LEVEL, Number(params.get('level') ?? 1) || 1));
+let currentDpr = 1;
 let matchSeq = 1;
 let settledMatchSeq = 0;
-let localWalletCp = 1000;
+let localWalletCp: number | null = bridge.embedded ? null : 1000;
 let lastSettlement: {
   matchId: string;
   outcome: 'won' | 'lost';
@@ -209,20 +216,28 @@ function renderCard() {
 }
 
 function syncProjector() {
+  const rawDpr = typeof window !== 'undefined' && Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
+  currentDpr = Math.max(1, Math.min(3, rawDpr));
   if (isInsitu()) {
     const vw = Math.max(320, document.documentElement.clientWidth || window.innerWidth || 960);
     const vh = Math.max(240, document.documentElement.clientHeight || window.innerHeight || 640);
-    if (canvas.width !== vw || canvas.height !== vh) {
-      canvas.width = vw;
-      canvas.height = vh;
+    const pw = Math.round(vw * currentDpr);
+    const ph = Math.round(vh * currentDpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
     }
+    ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
     currentProjector = createSpatialProjector(pack, vw, vh, bridge.context.map ?? null);
   } else {
     const gw = pack.map.width * PX, gh = pack.map.height * PX;
-    if (canvas.width !== gw || canvas.height !== gh) {
-      canvas.width = gw;
-      canvas.height = gh;
+    const pw = Math.round(gw * currentDpr);
+    const ph = Math.round(gh * currentDpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
     }
+    ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
     currentProjector = null;
   }
 }
@@ -253,7 +268,11 @@ function applyContext(c: HostContext) {
   session.setAgent(agent);
   llmLevelProvider?.setAgent(agent);
   if (c.wallet && typeof c.wallet.balanceCp === 'number' && Number.isFinite(c.wallet.balanceCp)) {
-    localWalletCp = Math.round(c.wallet.balanceCp);
+    const syncedCp = Math.round(c.wallet.balanceCp);
+    localWalletCp = syncedCp;
+    if (lastSettlement && lastSettlement.status === 'pending') {
+      lastSettlement.balanceCp = Math.max(0, syncedCp + lastSettlement.deltaCp);
+    }
   }
   // 宿主 context 一到就定军师可用性：没配（enabled:false）或老宿主（没有 advisor 字段）→ 不白等截止，秒切本地；排队中的请求随之放行 / 作废
   hostChannel?.setAvailable(c.advisor?.enabled === true);
@@ -270,15 +289,19 @@ function onHostSettleReply(sr: HostSettlementReply) {
   if (typeof sr.balanceCp === 'number' && Number.isFinite(sr.balanceCp)) {
     localWalletCp = Math.round(sr.balanceCp);
   }
+  const resolvedBalance = typeof sr.balanceCp === 'number' && Number.isFinite(sr.balanceCp)
+    ? Math.round(sr.balanceCp)
+    : (localWalletCp ?? 0);
   lastSettlement = {
     matchId: sr.matchId || lastSettlement?.matchId || `td-${state.seed}-${matchSeq}`,
     outcome: sr.outcome,
     deltaCp: sr.deltaCp,
     appliedCp: sr.appliedCp,
-    balanceCp: typeof sr.balanceCp === 'number' ? Math.round(sr.balanceCp) : localWalletCp,
+    balanceCp: resolvedBalance,
     status: 'settled',
   };
   renderHud();
+  draw();
 }
 
 function settleCurrentMatch(outcome: 'won' | 'lost') {
@@ -286,13 +309,18 @@ function settleCurrentMatch(outcome: 'won' | 'lost') {
   settledMatchSeq = matchSeq;
   const deltaCp = outcome === 'won' ? MATCH_WIN_CP : MATCH_LOSS_CP;
   const matchId = `td-${state.seed}-${matchSeq}-${state.tick}-${checksum(state)}`;
-  localWalletCp = Math.max(0, localWalletCp + deltaCp);
+  const hostCp = bridge.context.wallet?.balanceCp;
+  const baseCp = typeof hostCp === 'number' && Number.isFinite(hostCp)
+    ? Math.round(hostCp)
+    : (localWalletCp !== null ? localWalletCp : 0);
+  const nextBalance = Math.max(0, baseCp + deltaCp);
+  localWalletCp = nextBalance;
   lastSettlement = {
     matchId,
     outcome,
     deltaCp,
     appliedCp: deltaCp,
-    balanceCp: localWalletCp,
+    balanceCp: nextBalance,
     status: bridge.embedded ? 'pending' : 'settled',
   };
   if (!firstFrame) {
@@ -336,29 +364,47 @@ function renderHud() {
   }
   const phaseText = { build: t('build'), wave: t('fight'), won: t('won'), lost: t('lost') }[s.phase];
   hud.innerHTML = '';
+
+  const lvBadge = document.createElement('span');
+  lvBadge.id = 'td-campaign-level';
+  lvBadge.className = 'stats level-badge';
+  lvBadge.dataset.level = String(campaignLevel);
+  lvBadge.dataset.maxLevel = String(CAMPAIGN_MAX_LEVEL);
+  lvBadge.innerHTML = `<span class="hud-ico" aria-hidden="true">🚩</span><span>${t('level')} ${campaignLevel}/${CAMPAIGN_MAX_LEVEL}</span>`;
+  hud.append(lvBadge);
+
   const info = document.createElement('span');
   info.className = 'stats';
-  info.textContent = `${t('base')} ${s.base_hp}/${pack.map.base_hp}　${t('gold')} ${s.gold}　${t('wave')} ${s.wave_index}/${pack.waves.length}　${paused || hostHidden ? t('paused') : phaseText}`;
+  info.id = 'td-core-stats';
+  const statusStr = paused || hostHidden ? t('paused') : phaseText;
+  info.innerHTML = `<span class="hud-metric"><span class="hud-ico" aria-hidden="true">🛡️</span><span>${t('base')} <b class="hud-val">${s.base_hp}/${pack.map.base_hp}</b></span></span>` +
+    `<span class="hud-metric"><span class="hud-ico" aria-hidden="true">⚡</span><span>${t('gold')} <b class="hud-val">${s.gold}</b></span></span>` +
+    `<span class="hud-metric"><span class="hud-ico" aria-hidden="true">🌊</span><span>${t('wave')} <b class="hud-val">${s.wave_index}/${pack.waves.length}</b></span></span>` +
+    `<span class="hud-metric"><span class="hud-ico" aria-hidden="true">🎯</span><span>${escHtml(statusStr)}</span></span>`;
   hud.append(info);
 
   const cpChip = document.createElement('span');
   cpChip.id = 'td-cp-settlement';
   const walletCp = bridge.context.wallet?.balanceCp ?? localWalletCp;
+  const walletDisplay = walletCp !== null && walletCp !== undefined ? String(walletCp) : (lang === 'zh' ? '同步中' : 'Syncing');
   if (s.phase === 'won' || s.phase === 'lost') {
     const delta = lastSettlement?.deltaCp ?? (s.phase === 'won' ? MATCH_WIN_CP : MATCH_LOSS_CP);
     const sign = delta > 0 ? `+${delta}` : `${delta}`;
+    const settledBal = lastSettlement?.balanceCp ?? walletCp ?? 0;
     cpChip.className = `stats cp-badge ${s.phase === 'won' ? 'cp-won' : 'cp-lost'}`;
     cpChip.dataset.deltaCp = String(delta);
-    cpChip.dataset.balanceCp = String(lastSettlement?.balanceCp ?? walletCp);
-    cpChip.textContent = lang === 'zh'
-      ? `结算 ${sign} CP · ${t('wallet')} ${lastSettlement?.balanceCp ?? walletCp} CP`
-      : `Settle ${sign} CP · ${t('wallet')} ${lastSettlement?.balanceCp ?? walletCp} CP`;
+    cpChip.dataset.balanceCp = String(settledBal);
+    const settleLabel = lang === 'zh'
+      ? `结算 ${sign} CP · ${t('wallet')} ${settledBal} CP`
+      : `Settle ${sign} CP · ${t('wallet')} ${settledBal} CP`;
+    cpChip.innerHTML = `<span class="hud-ico" aria-hidden="true">💎</span><span>${escHtml(settleLabel)}</span>`;
   } else {
     cpChip.className = 'stats cp-badge';
-    cpChip.dataset.balanceCp = String(walletCp);
-    cpChip.textContent = lang === 'zh'
-      ? `${t('wallet')} ${walletCp} CP（胜+${MATCH_WIN_CP}/败${MATCH_LOSS_CP}）`
-      : `${t('wallet')} ${walletCp} CP (+${MATCH_WIN_CP}/${MATCH_LOSS_CP})`;
+    cpChip.dataset.balanceCp = walletCp !== null && walletCp !== undefined ? String(walletCp) : '';
+    const balLabel = lang === 'zh'
+      ? `${t('wallet')} ${walletDisplay} CP（胜+${MATCH_WIN_CP}/败${MATCH_LOSS_CP}）`
+      : `${t('wallet')} ${walletDisplay} CP (+${MATCH_WIN_CP}/${MATCH_LOSS_CP})`;
+    cpChip.innerHTML = `<span class="hud-ico" aria-hidden="true">💎</span><span>${escHtml(balLabel)}</span>`;
   }
   hud.append(cpChip);
 
@@ -369,12 +415,14 @@ function renderHud() {
     for (const g of nextWave.groups) counts.set(g.enemy_id, (counts.get(g.enemy_id) ?? 0) + g.count);
     const preview = document.createElement('span');
     preview.className = 'stats next-wave'; preview.id = 'td-next-wave';
-    preview.textContent = `${lang === 'zh' ? '下一波' : 'Next'}：${[...counts].map(([id, n]) => `${pack.enemies.find((e) => e.id === id)?.display_name ?? id}×${n}`).join(lang === 'zh' ? '、' : ', ')}`;
+    const nextStr = `${lang === 'zh' ? '下一波' : 'Next'}：${[...counts].map(([id, n]) => `${pack.enemies.find((e) => e.id === id)?.display_name ?? id}×${n}`).join(lang === 'zh' ? '、' : ', ')}`;
+    preview.innerHTML = `<span class="hud-ico" aria-hidden="true">🔭</span><span>${escHtml(nextStr)}</span>`;
     hud.append(preview);
   }
+  const towerIcon = (id: string) => /catapult|stone/.test(id) ? '💥' : /fire|poison/.test(id) ? '🌀' : '🔦';
   for (const tw of pack.towers) {
     const b = document.createElement('button');
-    b.textContent = `${tw.display_name} ${tw.cost} CP`;
+    b.innerHTML = `<span class="btn-ico" aria-hidden="true">${towerIcon(tw.id)}</span><span>${escHtml(tw.display_name)}</span> <span class="btn-cost">${tw.cost} CP</span>`;
     b.dataset.tower = tw.id;
     if (tw.id === selected) b.className = 'sel';
     b.disabled = s.gold < tw.cost || s.phase === 'won' || s.phase === 'lost';
@@ -394,6 +442,14 @@ function renderHud() {
   };
   hud.append(w);
   if (s.phase === 'won' || s.phase === 'lost') {
+    if (s.phase === 'won' && campaignLevel < CAMPAIGN_MAX_LEVEL) {
+      const nxt = document.createElement('button');
+      nxt.id = 'td-next-level';
+      nxt.className = 'sel';
+      nxt.innerHTML = `<span class="btn-ico" aria-hidden="true">⏭️</span><span>${t('nextLevel')} (${campaignLevel + 1}/${CAMPAIGN_MAX_LEVEL})</span>`;
+      nxt.onclick = () => startCampaignLevel(campaignLevel + 1);
+      hud.append(nxt);
+    }
     // 复仇一局（玩法增强 ③）：把这局的战报交给关卡设计军师，出一张针对你弱点的关
     const rv = document.createElement('button');
     rv.id = 'td-revenge'; rv.textContent = revenging ? t('revenging') : t('revenge'); rv.disabled = revenging;
@@ -469,11 +525,14 @@ function fit() {
   if (!bridge.embedded) return;
   cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
+    syncProjector();
+    const logicalW = pack.map.width * PX;
+    const logicalH = pack.map.height * PX;
     const availW = Math.max(200, document.documentElement.clientWidth - 20);
     const availH = Math.max(200, document.documentElement.clientHeight - hud.offsetHeight - advisorBox.offsetHeight - 38);
-    const scale = Math.min(availW / canvas.width, availH / canvas.height, 2);
-    canvas.style.width = `${Math.floor(canvas.width * scale)}px`;
-    canvas.style.height = `${Math.floor(canvas.height * scale)}px`;
+    const scale = Math.min(availW / logicalW, availH / logicalH, 2);
+    canvas.style.width = `${Math.floor(logicalW * scale)}px`;
+    canvas.style.height = `${Math.floor(logicalH * scale)}px`;
   });
 }
 window.addEventListener('resize', fit);
@@ -484,8 +543,8 @@ function resolveClientCell(clientX: number, clientY: number): { x: number; y: nu
   if (!r.width || !r.height) return { x: -1, y: -1, slot: -1 };
   if (isInsitu()) {
     if (!currentProjector) syncProjector();
-    const sx = ((clientX - r.left) / r.width) * canvas.width;
-    const sy = ((clientY - r.top) / r.height) * canvas.height;
+    const sx = ((clientX - r.left) / r.width) * currentProjector!.viewportW;
+    const sy = ((clientY - r.top) / r.height) * currentProjector!.viewportH;
     const hit = currentProjector!.screenToCell(sx, sy);
     return { x: hit.cx, y: hit.cy, slot: hit.slot };
   }
@@ -545,8 +604,34 @@ canvas.addEventListener('click', (ev) => {
   session.notePlayerBuild();
 });
 
-// 触控：只注册一次；touchend 里 preventDefault 抑制浏览器随后合成的 click，避免一次点触建两座塔
+// 触控：支持 iPad 双指捏合缩放相机 + 单指点触建塔；touchend 里 preventDefault 抑制浏览器随后合成的 click，避免一次点触建两座塔
+let touchPinchDist: number | null = null;
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    touchPinchDist = Math.hypot(dx, dy);
+  } else {
+    touchPinchDist = null;
+  }
+}, { passive: true });
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && touchPinchDist !== null && isInsitu()) {
+    e.preventDefault();
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const d = Math.hypot(dx, dy);
+    if (Math.abs(d - touchPinchDist) > 10) {
+      bridge.send({ type: 'td:camera', kind: 'zoom', dy: d > touchPinchDist ? -60 : 60 });
+      touchPinchDist = d;
+    }
+  }
+}, { passive: false });
 canvas.addEventListener('touchend', (e) => {
+  if (touchPinchDist !== null) {
+    if (e.touches.length < 2) touchPinchDist = null;
+    return;
+  }
   const tp = e.changedTouches[0];
   if (!tp) return;
   e.preventDefault();
@@ -702,21 +787,28 @@ function tickOnce() {
   onEvents(r.events);
   session.afterTick(state, r.events);
   const dt = 1 / TICKS_PER_SECOND;
+  const now = performance.now();
   for (let i = particles.length - 1; i >= 0; i--) {
     particles[i].x += particles[i].vx * dt;
     particles[i].y += particles[i].vy * dt;
     particles[i].life -= dt;
     if (particles[i].life <= 0) particles.splice(i, 1);
   }
+  if (particles.length > 160) particles.splice(0, particles.length - 160);
   for (let i = floatingPopups.length - 1; i >= 0; i--) {
     floatingPopups[i].y -= 22 * dt;
     floatingPopups[i].life -= dt;
     if (floatingPopups[i].life <= 0) floatingPopups.splice(i, 1);
   }
+  if (floatingPopups.length > 48) floatingPopups.splice(0, floatingPopups.length - 48);
   for (let i = shieldRipples.length - 1; i >= 0; i--) {
     shieldRipples[i].life -= dt;
     if (shieldRipples[i].life <= 0) shieldRipples.splice(i, 1);
   }
+  if (shieldRipples.length > 32) shieldRipples.splice(0, shieldRipples.length - 32);
+  if (shots.length > 64) shots.splice(0, shots.length - 64);
+  for (const [k, exp] of towerRecoils) if (exp < now) towerRecoils.delete(k);
+  for (const [k, exp] of enemyHitFlashes) if (exp < now) enemyHitFlashes.delete(k);
 
   if (r.events.length || cmds.length) renderHud();
   if (r.events.some((e) => e.type === 'wave_started' || e.type === 'wave_cleared' || e.type === 'battle_ended' || e.type === 'gambit_accepted')) scheduleCard();
@@ -733,6 +825,7 @@ function draw() {
     : undefined;
   if (isInsitu()) {
     if (!currentProjector) syncProjector();
+    ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
     drawSpatialBattlefield(ctx, s, pack, theme, currentProjector!, {
       pathCells: PATH_CELLS,
       cardView,
@@ -762,7 +855,10 @@ function draw() {
     }
     return;
   }
-  ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const logicalW = pack.map.width * PX;
+  const logicalH = pack.map.height * PX;
+  ctx.setTransform(currentDpr, 0, 0, currentDpr, 0, 0);
+  ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, logicalW, logicalH);
 
   for (let y = 0; y < pack.map.height; y++) {
     for (let x = 0; x < pack.map.width; x++) {
@@ -826,13 +922,13 @@ function draw() {
   if (!inLobby && (s.phase === 'build' || s.phase === 'wave')) drawAdvisorOverlay(ctx, cardView, pack, PX, theme.accent ?? '#ffd36a');
 
   if (s.phase === 'won' || s.phase === 'lost') {
-    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, logicalW, logicalH);
     ctx.fillStyle = theme.paper ?? theme.text; ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(s.phase === 'won' ? t('held') : t('fell'), canvas.width / 2, canvas.height / 2 - 12);
+    ctx.fillText(s.phase === 'won' ? t('held') : t('fell'), logicalW / 2, logicalH / 2 - 12);
     if (settlementText) {
       ctx.font = 'bold 18px sans-serif';
       ctx.fillStyle = s.phase === 'won' ? (theme.ok ?? '#338a72') : (theme.danger ?? '#ff9a8a');
-      ctx.fillText(settlementText, canvas.width / 2, canvas.height / 2 + 24);
+      ctx.fillText(settlementText, logicalW / 2, logicalH / 2 + 24);
     }
   }
   if (dbg.style.display !== 'none') {
@@ -1053,7 +1149,43 @@ async function revenge() {
     renderHud();
   }
 }
+function cleanupBattleResources() {
+  particles.length = 0;
+  shots.length = 0;
+  floatingPopups.length = 0;
+  shieldRipples.length = 0;
+  towerRecoils.clear();
+  enemyHitFlashes.clear();
+  recorded.length = 0;
+  queue = [];
+  hitStopUntil = 0;
+  screenShakeUntil = 0;
+}
+
+window.addEventListener('pagehide', () => {
+  cleanupBattleResources();
+  cancelAnimationFrame(cardRaf);
+  cancelAnimationFrame(fitRaf);
+});
+
+function startCampaignLevel(lv: number, skinOverride?: string | null) {
+  campaignLevel = Math.max(1, Math.min(CAMPAIGN_MAX_LEVEL, Math.round(lv || 1)));
+  const sk = skinOverride ?? activeSkin() ?? CAMPAIGN_SKIN_ROTATION[(campaignLevel - 1) % CAMPAIGN_SKIN_ROTATION.length];
+  const nextPack = generateCampaignPack(campaignLevel, sk, lang, selectedEdictId, activeAffixIds);
+  startWith(nextPack);
+  return {
+    level: campaignLevel,
+    maxLevel: CAMPAIGN_MAX_LEVEL,
+    skin: sk,
+    theme: pack.meta.theme,
+    enemyTypes: pack.enemies.length,
+    waveCount: pack.waves.length,
+    pathCellsCount: PATH_CELLS.size,
+  };
+}
+
 function startWith(p: ContentPack) {
+  cleanupBattleResources();
   baseRawPack = p;
   syncPackLexicon(false);
   PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
@@ -1061,14 +1193,7 @@ function startWith(p: ContentPack) {
   selected = pack.towers[0].id;
   matchSeq++;
   lastSettlement = null;
-  state = createBattle(pack, SEED);
-  recorded.length = 0;
-  shots.length = 0;
-  floatingPopups.length = 0;
-  shieldRipples.length = 0;
-  towerRecoils.clear();
-  enemyHitFlashes.clear();
-  queue = [];
+  state = createBattle(pack, SEED + campaignLevel - 1);
   inLobby = false; lobby.style.display = 'none'; renderHud();
   session.reset(state);
   scheduleCard();
@@ -1182,22 +1307,36 @@ requestAnimationFrame(frame);
     if (!state.towers.length && currentProjector?.tacticalSlots.length) {
       const s0 = currentProjector.tacticalSlots[0];
       const s1 = currentProjector.tacticalSlots[1] ?? s0;
+      const s2 = currentProjector.tacticalSlots[2] ?? s1;
       state.towers.push(
         { iid: 901, def: pack.towers[0].id, cx: s0.x, cy: s0.y, x: (s0.x + 0.5) * CELL, y: (s0.y + 0.5) * CELL, cooldown: 0, life: 'alive' },
         { iid: 902, def: (pack.towers[1] ?? pack.towers[0]).id, cx: s1.x, cy: s1.y, x: (s1.x + 0.5) * CELL, y: (s1.y + 0.5) * CELL, cooldown: 0, life: 'alive' },
+        { iid: 903, def: (pack.towers[2] ?? pack.towers[0]).id, cx: s2.x, cy: s2.y, x: (s2.x + 0.5) * CELL, y: (s2.y + 0.5) * CELL, cooldown: 0, life: 'alive' },
       );
     }
     if (!state.enemies.length) {
       const pMid = pack.map.path[Math.min(2, pack.map.path.length - 1)];
-      state.enemies.push({
-        iid: 951,
-        def: pack.enemies[0].id,
-        hp: Math.round(pack.enemies[0].hp * 0.65),
-        progress: 2400,
-        x: (pMid.x + 0.5) * CELL,
-        y: (pMid.y + 0.5) * CELL,
-        life: 'alive',
-      });
+      const pAhead = pack.map.path[Math.min(4, pack.map.path.length - 1)];
+      state.enemies.push(
+        {
+          iid: 951,
+          def: pack.enemies[0].id,
+          hp: Math.round(pack.enemies[0].hp * 0.65),
+          progress: 2400,
+          x: (pMid.x + 0.5) * CELL,
+          y: (pMid.y + 0.5) * CELL,
+          life: 'alive',
+        },
+        {
+          iid: 952,
+          def: (pack.enemies[1] ?? pack.enemies[0]).id,
+          hp: Math.round((pack.enemies[1] ?? pack.enemies[0]).hp * 0.8),
+          progress: 4200,
+          x: (pAhead.x + 0.5) * CELL,
+          y: (pAhead.y + 0.5) * CELL,
+          life: 'alive',
+        },
+      );
     }
     const tw = state.towers[0];
     const en = state.enemies[0];
@@ -1217,6 +1356,104 @@ requestAnimationFrame(frame);
     draw();
     return lastSettlement;
   },
+  get campaign() {
+    return {
+      level: campaignLevel,
+      maxLevel: CAMPAIGN_MAX_LEVEL,
+      skinRotation: CAMPAIGN_SKIN_ROTATION,
+      enemyTypesCount: pack.enemies.length,
+      enemyIds: pack.enemies.map((e) => e.id),
+      towerIds: pack.towers.map((t) => t.id),
+      pathCellsCount: PATH_CELLS.size,
+    };
+  },
+  startCampaignLevel: (lv: number, skinOverride?: string | null) => startCampaignLevel(lv, skinOverride),
+  get assets3d() {
+    return getSkin3dAssetManifest();
+  },
+  runBalanceAudit: () => {
+    const sk = activeSkin() ?? 'union-atlas-3d';
+    const stages = [1, 2, 3].map((lv) => {
+      const p = generateCampaignPack(lv, sk, lang);
+      const noTowers = dryRun(p, 'no_towers', 100 + lv);
+      const poor = dryRun(p, 'poor_placement', 100 + lv);
+      const greedy = dryRun(p, 'greedy', 100 + lv);
+      return {
+        level: lv,
+        startingCp: p.map.starting_gold,
+        baseHp: p.map.base_hp,
+        maxEnemyBaseDamage: Math.max(...p.enemies.map((e) => e.base_damage)),
+        fastEnemySpeed: p.enemies.find((e) => e.id === 'light_cavalry')?.speed ?? 52,
+        enemyCount: p.enemies.length,
+        noTowers: { result: noTowers.result, baseHp: noTowers.base_hp, leaks: noTowers.leaks, kills: noTowers.kills },
+        poorPlacement: { result: poor.result, baseHp: poor.base_hp, leaks: poor.leaks, kills: poor.kills },
+        reasonablePlacement: { result: greedy.result, baseHp: greedy.base_hp, leaks: greedy.leaks, kills: greedy.kills, towersBuilt: greedy.towers },
+      };
+    });
+    return {
+      calibratedConstants: {
+        baseDamageCap: 3,
+        fastEnemySpeed: 52,
+        startingCpStage1: 180,
+        crossbowRange: 2650,
+      },
+      stages,
+    };
+  },
+  runMemoryBenchmark: (rounds = 10) => {
+    const samples: {
+      round: number;
+      beforeCleanup: { particles: number; shots: number; popups: number; ripples: number };
+      afterCleanup: { particles: number; shots: number; popups: number; ripples: number; recoils: number; flashes: number };
+      heapUsedBytes: number | null;
+      frameMs: number;
+    }[] = [];
+    for (let r = 1; r <= rounds; r++) {
+      startCampaignLevel(r);
+      (window as any).__td.triggerDemoCombatVfx();
+      const t0 = performance.now();
+      for (let k = 0; k < 15; k++) tickOnce();
+      draw();
+      const frameMs = Math.round(((performance.now() - t0) / 15) * 100) / 100;
+      const beforeCleanup = {
+        particles: particles.length,
+        shots: shots.length,
+        popups: floatingPopups.length,
+        ripples: shieldRipples.length,
+      };
+      cleanupBattleResources();
+      const afterCleanup = {
+        particles: particles.length,
+        shots: shots.length,
+        popups: floatingPopups.length,
+        ripples: shieldRipples.length,
+        recoils: towerRecoils.size,
+        flashes: enemyHitFlashes.size,
+      };
+      const mem = (performance as any).memory;
+      samples.push({
+        round: r,
+        beforeCleanup,
+        afterCleanup,
+        heapUsedBytes: mem && typeof mem.usedJSHeapSize === 'number' ? mem.usedJSHeapSize : null,
+        frameMs,
+      });
+    }
+    startWith(DEFAULT_PACK);
+    return {
+      rounds,
+      allZeroAfterCleanup: samples.every(
+        (s) =>
+          s.afterCleanup.particles === 0 &&
+          s.afterCleanup.shots === 0 &&
+          s.afterCleanup.popups === 0 &&
+          s.afterCleanup.ripples === 0 &&
+          s.afterCleanup.recoils === 0 &&
+          s.afterCleanup.flashes === 0,
+      ),
+      samples,
+    };
+  },
   get insitu() { return isInsitu(); },
   get spatial() {
     if (!isInsitu()) return null;
@@ -1225,7 +1462,7 @@ requestAnimationFrame(frame);
     return {
       insitu: true,
       canvasBg: 'transparent',
-      stage: { w: canvas.width, h: canvas.height },
+      stage: { w: p.viewportW, h: p.viewportH, physicalW: canvas.width, physicalH: canvas.height, dpr: currentDpr },
       azimuth: p.azimuth,
       pitch: p.pitch,
       zoom: p.zoom,

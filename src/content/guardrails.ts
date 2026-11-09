@@ -6,6 +6,7 @@ export const GUARDRAILS = {
   tower_cost: { min: 20, max: 300 },
   enemy_max_health: { min: 10, max: 2000 },
   enemy_speed: { min: 10, max: 150 },
+  enemy_base_damage: { min: 1, max: 3 },
   enemy_gold: { min: 1, max: 100 },
   wave_total_enemies: { min: 3, max: 40 },
   wave_count: { min: 3, max: 10 },

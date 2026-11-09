@@ -105,10 +105,10 @@
    "display_name": "轻骑",
    "components": {
     "Health": {
-     "max": 70
+     "max": 65
     },
     "Movement": {
-     "speed_milli_per_tick": 70
+     "speed_milli_per_tick": 52
     },
     "PathFollower": {
      "base_damage": 1
