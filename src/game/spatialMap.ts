@@ -8,6 +8,7 @@ import type { BattleState, Cell, ContentPack } from '../runtime/types';
 import { reachTable, slotCell } from '../advisor/snapshot';
 import type { AdvisorView } from '../advisor/session';
 import type { Palette } from './palettes';
+import { getCulturalLexicon } from './culturalThemes';
 
 export interface HostSpatialNode {
   key: string;
@@ -43,11 +44,13 @@ export interface RoadSegment {
   x1: number;
   y1: number;
   kind: 'native' | 'bridge';
+  branch?: 'main' | 'split';
   label?: string;
 }
 
 export interface RoadPlan {
   segments: RoadSegment[];
+  splitBranchSegments: RoadSegment[];
   nativeRatio: number;
   bridgeRatio: number;
   startBuilding: HostSpatialNode;
@@ -357,8 +360,9 @@ export function createSpatialProjector(
     };
   }
 
-  // 构建 80%–100% 皮肤原生道路复用 + 0%–20% 断头桥接方案（大厅 #25801 ①）
+  // 构建 80%–100% 皮肤原生道路复用 + 0%–20% 断头桥接方案（大厅 #25801 ①）+ 策略路线分流（大厅 #26153 ③）
   const segments: RoadSegment[] = [];
+  const splitBranchSegments: RoadSegment[] = [];
   let nativeLen = 0;
   let bridgeLen = 0;
   for (let i = 1; i < waypoints.length; i++) {
@@ -371,14 +375,25 @@ export function createSpatialProjector(
       const bridgeShare = 0.65; // 使整条路线中 bridge 总长严格落在 8%–18%（即 nativeRatio ∈ [82%, 92%] ⊂ [80%, 100%]）
       const mx = a.x + (b.x - a.x) * bridgeShare;
       const my = a.y + (b.y - a.y) * bridgeShare;
-      segments.push({ x0: a.x, y0: a.y, x1: mx, y1: my, kind: 'bridge', label: '断头桥接段' });
-      segments.push({ x0: mx, y0: my, x1: b.x, y1: b.y, kind: 'native', label: '原生道路' });
+      segments.push({ x0: a.x, y0: a.y, x1: mx, y1: my, kind: 'bridge', branch: 'main', label: '断头桥接段' });
+      segments.push({ x0: mx, y0: my, x1: b.x, y1: b.y, kind: 'native', branch: 'main', label: '原生道路' });
       bridgeLen += segLen * bridgeShare;
       nativeLen += segLen * (1 - bridgeShare);
     } else {
-      segments.push({ x0: a.x, y0: a.y, x1: b.x, y1: b.y, kind: 'native', label: '原生道路' });
+      segments.push({ x0: a.x, y0: a.y, x1: b.x, y1: b.y, kind: 'native', branch: 'main', label: '原生道路' });
       nativeLen += segLen;
     }
+  }
+  // 构建高速先锋/重甲分流辅路支线（从第 2 折点绕行侧翼汇入第 4 折点）
+  if (waypoints.length >= 4) {
+    const p1 = waypoints[1];
+    const p3 = waypoints[Math.min(waypoints.length - 2, 3)];
+    const midX = Math.round((p1.x + p3.x) * 0.5 + 34);
+    const midY = Math.round((p1.y + p3.y) * 0.5 - 28);
+    splitBranchSegments.push(
+      { x0: p1.x, y0: p1.y, x1: midX, y1: midY, kind: 'native', branch: 'split', label: '侧翼分流支线' },
+      { x0: midX, y0: midY, x1: p3.x, y1: p3.y, kind: 'bridge', branch: 'split', label: '分流汇入栈桥' },
+    );
   }
   const totalLen = Math.max(1, nativeLen + bridgeLen);
   let nativeRatio = Math.round((nativeLen / totalLen) * 1000) / 1000;
@@ -386,6 +401,7 @@ export function createSpatialProjector(
   const bridgeRatio = Math.round((1 - nativeRatio) * 1000) / 1000;
   const roadPlan: RoadPlan = {
     segments,
+    splitBranchSegments,
     nativeRatio,
     bridgeRatio,
     startBuilding,
@@ -521,13 +537,50 @@ function drawPillTag(
   ctx.restore();
 }
 
+export interface SpatialShot {
+  fx: number;
+  fy: number;
+  tx: number;
+  ty: number;
+  until: number;
+  towerIid?: number;
+  targetIid?: number;
+}
+
+export interface FloatingPopup {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  critical?: boolean;
+  life: number;
+  maxLife: number;
+}
+
+export interface ShieldRipple {
+  x: number;
+  y: number;
+  r: number;
+  maxR: number;
+  color: string;
+  life: number;
+  maxLife: number;
+  isBase?: boolean;
+}
+
 export interface SpatialDrawOptions {
   pathCells: Set<string>;
   cardView: AdvisorView;
   selectedTowerId: string;
   hoverCell: { cx: number; cy: number; slot: number } | null;
-  shots: { fx: number; fy: number; tx: number; ty: number; until: number }[];
+  shots: SpatialShot[];
   particles: { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string }[];
+  floatingPopups?: FloatingPopup[];
+  shieldRipples?: ShieldRipple[];
+  towerRecoils?: Map<number, number>;
+  enemyHitFlashes?: Map<number, number>;
+  screenShakeUntil?: number;
+  reducedMotion?: boolean;
   now: number;
   inLobby: boolean;
   lang: 'zh' | 'en';
@@ -548,6 +601,7 @@ export function drawSpatialBattlefield(
   // 1. 透明画布清屏：直接透出底下 #hub-view 的空间/平面皮肤地图，严禁绘制任何不透明底板或大矩形网格框
   ctx.clearRect(0, 0, width, height);
 
+  const lex = getCulturalLexicon(proj.hostMap?.skin);
   const accent = theme.accent ?? theme.base ?? '#356d73';
   const ink = theme.ink ?? theme.text ?? '#263443';
   const paper = theme.paper ?? '#f3f5eb';
@@ -558,8 +612,21 @@ export function drawSpatialBattlefield(
   const okColor = theme.ok ?? '#338a72';
   const aspectY = Math.max(0.52, Math.min(0.88, Math.sin(proj.pitch)));
 
+  // 轻度屏幕震动（重炮轰击/基地受创时触发；开启减弱动态 reducedMotion 时严格归零）
+  ctx.save();
+  if (!opts.reducedMotion && opts.screenShakeUntil && opts.now < opts.screenShakeUntil) {
+    const rem = Math.min(1, (opts.screenShakeUntil - opts.now) / 180);
+    const amp = lex.vfx.screenShakePx * rem;
+    const sx = Math.sin(opts.now * 0.095) * amp;
+    const sy = Math.cos(opts.now * 0.125) * amp * 0.75;
+    ctx.translate(sx, sy);
+  }
+
   const waypoints = pack.map.path.map((c) => proj.cellToScreen(c.x + 0.5, c.y + 0.5));
-  if (waypoints.length < 2) return;
+  if (waypoints.length < 2) {
+    ctx.restore();
+    return;
+  }
 
   // 2. 场景地标与片区脉络微光引线（将宿主皮肤地图中的地标与防线终点/起点轻柔衔接）
   if (proj.hostMap) {
@@ -691,7 +758,29 @@ export function drawSpatialBattlefield(
     }
   }
 
-  // (3.3) 道路中央动态行军标线与流光方向标（Chevrons）
+  // (3.3) 道路中央动态行军标线与流光方向标（Chevrons）+ 侧翼分流支线（Route Split）
+  if (proj.roadPlan.splitBranchSegments.length >= 2) {
+    ctx.save();
+    ctx.setLineDash([5, 6]);
+    ctx.strokeStyle = rgba(accent, 0.56);
+    ctx.lineWidth = Math.max(8, trackW * 0.42);
+    ctx.beginPath();
+    const s0 = proj.roadPlan.splitBranchSegments[0];
+    const s1 = proj.roadPlan.splitBranchSegments[1];
+    ctx.moveTo(s0.x0, s0.y0);
+    ctx.quadraticCurveTo(s0.x1, s0.y1, s1.x1, s1.y1);
+    ctx.stroke();
+
+    ctx.setLineDash([3, 5]);
+    ctx.strokeStyle = rgba(paper, 0.85, '255,255,255');
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(s0.x0, s0.y0);
+    ctx.quadraticCurveTo(s0.x1, s0.y1, s1.x1, s1.y1);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   traceCenterPath(0, 0);
   ctx.strokeStyle = rgba(paper, 0.82, '255,255,255');
   ctx.lineWidth = 1.8;
@@ -960,32 +1049,61 @@ export function drawSpatialBattlefield(
     ctx.fill();
     ctx.stroke();
 
-    // 2.5D 炮塔转台主体
-    const turretY = center.y - lift;
+    // 2.5D 炮塔转台主体（含开火后坐力微弹 Recoil 与炮口闪光 Muzzle Flash）
+    const recoilUntil = opts.towerRecoils?.get(tw.iid) ?? 0;
+    const recoilRatio = !opts.reducedMotion && recoilUntil > opts.now
+      ? Math.max(0, Math.min(1, (recoilUntil - opts.now) / 140))
+      : 0;
+    const recoilOffset = recoilRatio * lex.vfx.recoilPx;
+    const turretX = center.x - Math.cos(aimAngle) * recoilOffset;
+    const turretY = center.y - lift - Math.sin(aimAngle) * recoilOffset * 0.65;
     const turretR = Math.max(7.5, proj.cellPx * 0.18);
+    const muzzleX = turretX + Math.cos(aimAngle) * (turretR * 1.48);
+    const muzzleY = turretY + Math.sin(aimAngle) * (turretR * 1.48);
 
-    // 炮管/弩臂指示器
+    // 炮管/发射器指示器
     ctx.strokeStyle = paper;
     ctx.lineWidth = 4.2;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(center.x, turretY);
-    ctx.lineTo(center.x + Math.cos(aimAngle) * (turretR * 1.45), turretY + Math.sin(aimAngle) * (turretR * 1.45));
+    ctx.moveTo(turretX, turretY);
+    ctx.lineTo(muzzleX, muzzleY);
     ctx.stroke();
 
     ctx.strokeStyle = towerColor;
     ctx.lineWidth = 2.4;
     ctx.beginPath();
-    ctx.moveTo(center.x, turretY);
-    ctx.lineTo(center.x + Math.cos(aimAngle) * (turretR * 1.45), turretY + Math.sin(aimAngle) * (turretR * 1.45));
+    ctx.moveTo(turretX, turretY);
+    ctx.lineTo(muzzleX, muzzleY);
     ctx.stroke();
+
+    // 炮口闪光（Muzzle Flash）
+    if (recoilRatio > 0.15) {
+      const flashR = turretR * (0.65 + recoilRatio * 0.75);
+      ctx.save();
+      ctx.fillStyle = lex.vfx.muzzleColor;
+      ctx.globalAlpha = Math.min(1, recoilRatio * 1.15);
+      ctx.beginPath();
+      ctx.arc(muzzleX, muzzleY, flashR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = lex.vfx.beamGlowColor;
+      ctx.lineWidth = 1.6;
+      for (let k = 0; k < 4; k++) {
+        const a = aimAngle + (k - 1.5) * 0.42;
+        ctx.beginPath();
+        ctx.moveTo(muzzleX, muzzleY);
+        ctx.lineTo(muzzleX + Math.cos(a) * flashR * 1.55, muzzleY + Math.sin(a) * flashR * 1.55);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     // 炮塔圆顶
     ctx.fillStyle = towerColor;
     ctx.strokeStyle = paper;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(center.x, turretY, turretR, 0, Math.PI * 2);
+    ctx.arc(turretX, turretY, turretR, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
@@ -993,14 +1111,16 @@ export function drawSpatialBattlefield(
     ctx.font = 'bold 10px "IBM Plex Sans", "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(def.display_name[0], center.x, turretY + 0.5);
+    ctx.fillText(def.display_name[0], turretX, turretY + 0.5);
     ctx.restore();
   }
 
-  // 8. 复用皮肤原生车辆与行人模型充当小兵 + 叠加战局特效（脚底脉冲光环 + 行军流光尾迹 + 战局信标，大厅 #25801 ②）
+  // 8. 复用皮肤原生车辆与行人模型充当小兵 + 叠加战局特效（脚底脉冲光环 + 行军流光尾迹 + 战局信标 + 受击闪白 Hit-flash，大厅 #25801 ② / #26153 ②）
   for (const e of state.enemies) {
     const def = pack.enemies.find((d) => d.id === e.def)!;
     const pt = proj.milliToScreen(e.x, e.y);
+    const hitFlashUntil = opts.enemyHitFlashes?.get(e.iid) ?? 0;
+    const isHitFlashing = hitFlashUntil > opts.now;
     const aheadPt = proj.milliToScreen(
       Math.min(pack.map.width * CELL, e.x + 120),
       e.y,
@@ -1042,10 +1162,10 @@ export function drawSpatialBattlefield(
 
     // (8.2) 特效 ②：脚底战局脉冲光环（Tactical Aura Ring + Shadow）
     ctx.save();
-    ctx.shadowColor = danger;
-    ctx.shadowBlur = 8;
-    ctx.strokeStyle = rgba(danger, 0.88);
-    ctx.lineWidth = 1.8;
+    ctx.shadowColor = isHitFlashing ? '#ffffff' : danger;
+    ctx.shadowBlur = isHitFlashing ? 12 : 8;
+    ctx.strokeStyle = isHitFlashing ? '#ffffff' : rgba(danger, 0.88);
+    ctx.lineWidth = isHitFlashing ? 2.4 : 1.8;
     ctx.beginPath();
     ctx.ellipse(pt.x, pt.y + 2, r * 1.28 * pulse, r * 1.28 * aspectY * pulse, 0, 0, Math.PI * 2);
     ctx.stroke();
@@ -1056,8 +1176,8 @@ export function drawSpatialBattlefield(
     ctx.ellipse(pt.x, pt.y + 2, r * 1.05, r * 1.05 * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // (8.3) 皮肤原生车辆 / 行人 2.5D 模型本体（与 metropolis.js / kit-land.js / actors.js 同源比例）
-    const bodyColor = def.color ?? danger;
+    // (8.3) 皮肤原生车辆 / 行人 2.5D 模型本体（受击时触发高亮闪白 Hit-flash）
+    const bodyColor = isHitFlashing ? '#ffffff' : (def.color ?? danger);
     if (modelKind === 'vehicle' || modelKind === 'heavy_vehicle') {
       // 原生车辆模型（metropolis.js vehicle / kit-land.js movers：底盘车体 box + 顶部玻璃驾驶舱 cab + 车头灯）
       const isHeavy = modelKind === 'heavy_vehicle';
@@ -1078,8 +1198,8 @@ export function drawSpatialBattlefield(
       ctx.fill();
 
       ctx.fillStyle = bodyColor;
-      ctx.strokeStyle = paper;
-      ctx.lineWidth = 1.3;
+      ctx.strokeStyle = isHitFlashing ? lex.vfx.critColor : paper;
+      ctx.lineWidth = isHitFlashing ? 2.0 : 1.3;
       ctx.beginPath();
       ctx.roundRect(-halfL, -halfW - chassisH * 0.35, halfL * 2, halfW * 2, 3.5);
       ctx.fill();
@@ -1088,7 +1208,7 @@ export function drawSpatialBattlefield(
       // 车顶玻璃座舱（Cab / Roof）
       const cabL = halfL * (isHeavy ? 0.72 : 0.58);
       const cabW = halfW * 0.78;
-      ctx.fillStyle = rgba(accent, 0.92);
+      ctx.fillStyle = isHitFlashing ? '#ffffff' : rgba(accent, 0.92);
       ctx.strokeStyle = rgba(paper, 0.85);
       ctx.lineWidth = 1.0;
       ctx.beginPath();
@@ -1113,8 +1233,8 @@ export function drawSpatialBattlefield(
 
       // 行人风衣躯干（圆柱立面）
       ctx.fillStyle = bodyColor;
-      ctx.strokeStyle = paper;
-      ctx.lineWidth = 1.3;
+      ctx.strokeStyle = isHitFlashing ? lex.vfx.critColor : paper;
+      ctx.lineWidth = isHitFlashing ? 2.0 : 1.3;
       ctx.beginPath();
       ctx.roundRect(pt.x - torsoW / 2, footY - torsoH, torsoW, torsoH, 4);
       ctx.fill();
@@ -1129,7 +1249,7 @@ export function drawSpatialBattlefield(
       ctx.stroke();
 
       // 行人球形头部
-      ctx.fillStyle = paper;
+      ctx.fillStyle = isHitFlashing ? '#ffffff' : paper;
       ctx.strokeStyle = bodyColor;
       ctx.lineWidth = 1.3;
       ctx.beginPath();
@@ -1153,8 +1273,22 @@ export function drawSpatialBattlefield(
     ctx.restore();
   }
 
-  // 9. 粒子与渐变攻击弹道
+  // 9. 受击护盾波纹、基地护盾涟漪、碎屑粒子、四款皮肤专属攻击弹道与破甲暴击跳字（大厅 #26153 ②）
   ctx.save();
+  if (opts.shieldRipples?.length) {
+    for (const rp of opts.shieldRipples) {
+      const ratio = Math.max(0, Math.min(1, rp.life / rp.maxLife));
+      const curR = rp.r + (rp.maxR - rp.r) * (1 - ratio);
+      ctx.strokeStyle = rp.color;
+      ctx.globalAlpha = ratio * (rp.isBase ? 0.85 : 0.72);
+      ctx.lineWidth = rp.isBase ? 2.6 : 1.8;
+      ctx.beginPath();
+      ctx.ellipse(rp.x, rp.y, curR, curR * aspectY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+
   for (const p of opts.particles) {
     ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
     ctx.fillStyle = p.color;
@@ -1165,6 +1299,7 @@ export function drawSpatialBattlefield(
   ctx.globalAlpha = 1;
 
   ctx.lineCap = 'round';
+  const style = lex.vfx.projectileStyle;
   for (let i = opts.shots.length - 1; i >= 0; i--) {
     const sh = opts.shots[i];
     if (opts.now > sh.until) {
@@ -1173,22 +1308,106 @@ export function drawSpatialBattlefield(
     }
     const f = proj.milliToScreen(sh.fx, sh.fy);
     const t = proj.milliToScreen(sh.tx, sh.ty);
-    const alpha = Math.max(0, (sh.until - opts.now) / 90);
+    const alpha = Math.max(0, (sh.until - opts.now) / 110);
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = rgba(paper, 0.9, '255,255,255');
-    ctx.lineWidth = 4.5;
-    ctx.beginPath();
-    ctx.moveTo(f.x, f.y - 8);
-    ctx.lineTo(t.x, t.y - 4);
-    ctx.stroke();
+    const x0 = f.x, y0 = f.y - 8;
+    const x1 = t.x, y1 = t.y - 4;
 
-    ctx.strokeStyle = theme.shot ?? accent;
-    ctx.lineWidth = 2.4;
-    ctx.beginPath();
-    ctx.moveTo(f.x, f.y - 8);
-    ctx.lineTo(t.x, t.y - 4);
-    ctx.stroke();
+    if (style === 'emp_arc') {
+      // 都会·河岸专属：折线脉冲电磁电弧（EMP Arc）
+      const mx = (x0 + x1) * 0.5 + (y1 - y0) * 0.16;
+      const my = (y0 + y1) * 0.5 - (x1 - x0) * 0.16;
+      ctx.strokeStyle = lex.vfx.beamGlowColor;
+      ctx.lineWidth = 4.6;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(mx, my);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+
+      ctx.strokeStyle = lex.vfx.beamCoreColor;
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(mx, my);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    } else if (style === 'holy_lance') {
+      // 暮钟·圣堂专属：圣光裁决辉光枪与十字星芒（Holy Lance）
+      ctx.strokeStyle = lex.vfx.beamGlowColor;
+      ctx.lineWidth = 5.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+
+      ctx.strokeStyle = lex.vfx.beamCoreColor;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(x1 - 6, y1);
+      ctx.lineTo(x1 + 6, y1);
+      ctx.moveTo(x1, y1 - 6);
+      ctx.lineTo(x1, y1 + 6);
+      ctx.stroke();
+    } else if (style === 'naval_shell') {
+      // 潮汐·港湾专属：高抛岸防高爆炮火弧线与尾烟（Naval Shell）
+      const cx = (x0 + x1) * 0.5;
+      const cy = Math.min(y0, y1) - 18;
+      ctx.strokeStyle = lex.vfx.beamGlowColor;
+      ctx.lineWidth = 4.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(cx, cy, x1, y1);
+      ctx.stroke();
+
+      ctx.strokeStyle = lex.vfx.muzzleColor;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(cx, cy, x1, y1);
+      ctx.stroke();
+    } else {
+      // 共和国·星院专属：高聚焦脉冲棱镜激光束（Prism Beam）
+      ctx.strokeStyle = lex.vfx.beamGlowColor;
+      ctx.lineWidth = 4.8;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+
+      ctx.strokeStyle = lex.vfx.beamCoreColor;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+    }
   }
+  ctx.globalAlpha = 1;
+
+  // 破甲/暴击/受击跳字（Floating Popups）
+  if (opts.floatingPopups?.length) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const fp of opts.floatingPopups) {
+      const ratio = Math.max(0, Math.min(1, fp.life / fp.maxLife));
+      ctx.globalAlpha = Math.min(1, ratio * 1.3);
+      ctx.font = fp.critical
+        ? '800 12.5px "IBM Plex Sans", "PingFang SC", sans-serif'
+        : '700 11px "IBM Plex Sans", "PingFang SC", sans-serif';
+      ctx.strokeStyle = 'rgba(10, 14, 22, 0.78)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(fp.text, fp.x, fp.y);
+      ctx.fillStyle = fp.color;
+      ctx.fillText(fp.text, fp.x, fp.y);
+    }
+  }
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   // 10. 胜负结算横幅（含单局 ±10 CP 真实结算结果展示，大厅 #25804 ④）
@@ -1221,4 +1440,5 @@ export function drawSpatialBattlefield(
     }
     ctx.restore();
   }
+  ctx.restore();
 }

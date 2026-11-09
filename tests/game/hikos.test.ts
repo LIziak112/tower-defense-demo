@@ -3,6 +3,14 @@ import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
 import { createSpatialProjector, getMinionModelKind, parseSpatialMap } from '../../src/game/spatialMap';
 import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice, sanitizeLlmPack } from '../../src/game/chatFormat';
+import {
+  buildCulturalMappingTable,
+  computeCounterPreview,
+  getCulturalLexicon,
+  localizePackForSkin,
+  replaceAncientTerms,
+  SKIN_CULTURAL_LEXICONS,
+} from '../../src/game/culturalThemes';
 import { validatePack } from '../../src/content/validate';
 import { balanceWarnings } from '../../src/content/dryrun';
 import { adviseLocal } from '../../src/advisor/local';
@@ -373,5 +381,57 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
     expect(replies).toHaveLength(1);
     expect(replies[0]).toMatchObject({ matchId: 'm-win-1', ok: true, outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 1010, idempotent: false });
     expect(bridge.context.wallet).toEqual({ balanceCp: 1010, netCp: 10, wonCount: 1, lostCount: 0 });
+  });
+
+  it('大厅 #26153 ①②③：四款皮肤世界观文化词表、专属弹道/动效规格、参谋敕令三选一、兵种克制与危机挑战词缀', () => {
+    const table = buildCulturalMappingTable();
+    expect(table).toHaveLength(4);
+
+    const ancientWords = /军师议事|弩车|投石车|火油台|步卒|轻骑|重甲/;
+    for (const row of table) {
+      expect(row.councilTitle.current).not.toMatch(ancientWords);
+      expect(row.advisorRole.current).not.toMatch(ancientWords);
+      for (const tw of row.towers) {
+        expect(tw.current).not.toMatch(ancientWords);
+        expect(tw.weapon.length).toBeGreaterThan(2);
+      }
+      for (const en of row.enemies) {
+        expect(en.current).not.toMatch(ancientWords);
+        expect(en.counter.length).toBeGreaterThan(2);
+      }
+    }
+
+    // 四款皮肤各自拥有不同专属弹道样式（prism_beam / emp_arc / holy_lance / naval_shell）
+    const styles = new Set(Object.values(SKIN_CULTURAL_LEXICONS).map((l) => l.vfx.projectileStyle));
+    expect(styles).toEqual(new Set(['prism_beam', 'emp_arc', 'holy_lance', 'naval_shell']));
+
+    // 自由文本替换去除古代中国称谓
+    const gothicText = replaceAncientTerms('军师议事：在折角布设弩车与投石车拦截步卒与轻骑', 'gothic-cathedral-3d', 'zh');
+    expect(gothicText).toContain('圣堂守夜审判庭');
+    expect(gothicText).toContain('圣光钟楼');
+    expect(gothicText).toContain('净罪重弩炮');
+    expect(gothicText).toContain('黯影障壁食尸鬼');
+    expect(gothicText).not.toMatch(ancientWords);
+
+    // 参谋敕令三选一与危机词缀对关卡包的确定性风险-回报调制
+    const base = DEFAULT_PACK;
+    const overclocked = localizePackForSkin(base, 'union-atlas-3d', 'zh', 'overclock', ['emp_fog', 'vanguard_surge']);
+    expect(overclocked.meta.theme).toBe('星院联邦 · 工业星图');
+    expect(overclocked.towers[0].display_name).toBe('脉冲棱镜塔');
+    expect(overclocked.towers[0].damage).toBeGreaterThan(base.towers[0].damage);
+    expect(overclocked.towers[0].interval_ticks).toBeGreaterThan(base.towers[0].interval_ticks);
+    expect(overclocked.towers[0].range).toBeLessThan(base.towers[0].range);
+    expect(overclocked.enemies[0].speed).toBeGreaterThan(base.enemies[0].speed);
+
+    // 兵种克制矩阵：crossbow 克 footman (shield)，catapult 克 heavy_armor (armor)，fire_brazier 克 light_cavalry (speed)
+    expect(computeCounterPreview('crossbow', 'footman', 'metropolis-riverside-3d')).toMatchObject({ isCounter: true, multiplier: 1.35, tagZh: '破盾暴击' });
+    expect(computeCounterPreview('catapult', 'heavy_armor', 'harbor-district-3d')).toMatchObject({ isCounter: true, multiplier: 1.35, tagZh: '穿甲重击' });
+    expect(computeCounterPreview('fire_brazier', 'light_cavalry', 'gothic-cathedral-3d')).toMatchObject({ isCounter: true, multiplier: 1.35, tagZh: '截击压制' });
+    expect(computeCounterPreview('crossbow', 'heavy_armor', 'union-atlas-3d')).toMatchObject({ isResisted: true, multiplier: 0.8, tagZh: '护甲偏转' });
+
+    // 路线分流支线验证
+    const proj = createSpatialProjector(DEFAULT_PACK, 1440, 856, parseSpatialMap({ skin: 'harbor-district-3d', w: 1440, h: 856 }));
+    expect(proj.roadPlan.splitBranchSegments.length).toBeGreaterThanOrEqual(2);
+    expect(getCulturalLexicon('harbor-district-3d').routeSplitLabel.zh).toContain('分流');
   });
 });

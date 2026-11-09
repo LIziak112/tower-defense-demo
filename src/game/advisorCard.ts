@@ -7,6 +7,7 @@ import { GAMBITS } from '../runtime/gambit';
 import { slotCell } from '../advisor/snapshot';
 import type { AdvisorView } from '../advisor/session';
 import { cleanTechTerms, extractNaturalAdvisorSpeech } from './chatFormat';
+import { culturalTowerName, getCulturalLexicon, replaceAncientTerms } from './culturalThemes';
 
 export interface CardHandlers {
   adopt(optionId: string): void;
@@ -65,8 +66,9 @@ const isSafeAvatarUrl = (u?: string): boolean =>
 
 let cardCollapsed = false;
 
-export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: ContentPack, lang: 'zh' | 'en', phase: string, h: CardHandlers) {
+export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: ContentPack, lang: 'zh' | 'en', phase: string, h: CardHandlers, skin?: string | null) {
   const s = STR[lang];
+  const lex = getCulturalLexicon(skin);
   root.innerHTML = '';
   root.dataset.status = view.status;
   root.dataset.source = view.current?.source ?? 'none';
@@ -74,9 +76,12 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   root.dataset.collapsed = cardCollapsed ? 'true' : 'false';
   const ag = view.provider.agent ?? null;
   if (ag?.name) root.dataset.agent = ag.name; else delete root.dataset.agent;
-  const towerName = (id: string) => pack.towers.find((t) => t.id === id)?.display_name ?? id;
+  const towerName = (id: string) => {
+    const raw = pack.towers.find((t) => t.id === id)?.display_name ?? id;
+    return skin ? culturalTowerName(id, raw, skin, lang) : raw;
+  };
 
-  // 1. 紧凑头部栏（头像 + 军师名 + 状态胶囊 + 比分 + 托管开关 + 折叠按钮）
+  // 1. 紧凑头部栏（头像 + 参谋名 + 状态胶囊 + 比分 + 托管开关 + 折叠按钮）
   const head = el('div', 'adv-head');
   if (ag?.name) {
     if (isSafeAvatarUrl(ag.avatar)) {
@@ -85,18 +90,18 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
       img.alt = ag.name;
       head.append(img);
     } else {
-      const glyph = el('span', 'adv-avatar adv-avatar-glyph', [...ag.name][0] ?? '军');
+      const glyph = el('span', 'adv-avatar adv-avatar-glyph', [...ag.name][0] ?? lex.advisorGlyph.zh);
       if (ag.color) glyph.style.setProperty('--adv-c', ag.color);
       head.append(glyph);
     }
   } else {
-    head.append(el('span', 'adv-avatar adv-avatar-glyph', '军'));
+    head.append(el('span', 'adv-avatar adv-avatar-glyph', skin ? lex.advisorGlyph[lang] : '军'));
   }
 
   const titleWrap = el('div', 'adv-title-wrap');
   const titleText = ag?.name
     ? `${ag.name}${ag.title ? ` · ${ag.title}` : ''}`
-    : s.title;
+    : (skin ? lex.advisorRole[lang] : s.title);
   const titleEl = el('span', 'adv-title', titleText);
   if (ag?.persona) titleEl.title = ag.persona;
   titleWrap.append(titleEl);
@@ -127,24 +132,24 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   auto.append(cb, document.createTextNode(s.auto));
   metaRight.append(auto);
 
-  const foldBtn = el('button', 'adv-fold-btn', cardCollapsed ? '▸' : '▾');
+    const foldBtn = el('button', 'adv-fold-btn', cardCollapsed ? '▸' : '▾');
   foldBtn.type = 'button';
   foldBtn.title = cardCollapsed ? s.unfold : s.fold;
   foldBtn.setAttribute('aria-label', cardCollapsed ? s.unfold : s.fold);
   foldBtn.onclick = (ev) => {
     ev.stopPropagation();
     cardCollapsed = !cardCollapsed;
-    renderAdvisorCard(root, view, pack, lang, phase, h);
+    renderAdvisorCard(root, view, pack, lang, phase, h, skin);
   };
   metaRight.append(foldBtn);
   head.append(metaRight);
   root.append(head);
 
-  // 折叠态下只保留军师一句话锦囊，释放左侧地图视野
+  // 折叠态下只保留参谋一句话锦囊，释放左侧地图视野
   const cur = view.current;
   if (cardCollapsed) {
     if (cur?.advice.say) {
-      root.append(el('p', 'adv-say adv-say-compact', `「${cur.advice.say}」`));
+      root.append(el('p', 'adv-say adv-say-compact', `「${skin ? replaceAncientTerms(cur.advice.say, skin, lang) : cur.advice.say}」`));
     }
     return;
   }
@@ -162,12 +167,12 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   if (view.betLine) root.append(el('p', 'adv-betline', view.betLine));
   if (view.notice && view.status !== 'thinking') {
     const cleanedNotice = cleanTechTerms(view.notice, lang);
-    if (cleanedNotice) root.append(el('p', 'adv-notice', cleanedNotice));
+    if (cleanedNotice) root.append(el('p', 'adv-notice', skin ? replaceAncientTerms(cleanedNotice, skin, lang) : cleanedNotice));
   }
   if (!cur) return;
 
   if (cur.advice.say) {
-    root.append(el('p', 'adv-say', `「${cur.advice.say}」`));
+    root.append(el('p', 'adv-say', `「${skin ? replaceAncientTerms(cur.advice.say, skin, lang) : cur.advice.say}」`));
   }
 
   // 3. 紧凑型战术方案列表（两三路有取舍的打法）
@@ -179,9 +184,9 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
 
     const topRow = el('div', 'adv-line');
     const tag = el('span', 'adv-opt-tag', o.id.toUpperCase());
-    const titleB = el('b', 'adv-opt-title', o.title);
+    const titleB = el('b', 'adv-opt-title', skin ? replaceAncientTerms(o.title, skin, lang) : o.title);
 
-    // 汇总器械数量（如「弩车×2」），不再罗列生硬的「槽38←弩车」
+    // 汇总器械数量，不再罗列生硬的「槽38←弩车」
     const counts = new Map<string, number>();
     for (const m of o.moves) {
       const nm = towerName(m.tower);
@@ -202,22 +207,28 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
     topRow.append(tag, titleB, movesChip, btn);
     card.append(topRow);
 
-    card.append(el('p', 'adv-why', o.why));
-    if (o.risk) card.append(el('p', 'adv-risk', s.risk + o.risk));
+    card.append(el('p', 'adv-why', skin ? replaceAncientTerms(o.why, skin, lang) : o.why));
+    if (o.risk) card.append(el('p', 'adv-risk', s.risk + (skin ? replaceAncientTerms(o.risk, skin, lang) : o.risk)));
 
     list.append(card);
   }
   root.append(list);
 
-  // 4. 押注与奇策变招底栏
-  if (cur.advice.bet) root.append(el('p', 'adv-bet', s.bet + cur.advice.bet.line));
+  // 4. 押注与奇策变招底栏（按皮肤切换调度令/苦修誓约/海事特许令称谓）
+  if (cur.advice.bet) root.append(el('p', 'adv-bet', s.bet + (skin ? replaceAncientTerms(cur.advice.bet.line, skin, lang) : cur.advice.bet.line)));
   if (view.gambit.offer || view.gambit.taken) {
     const g = el('div', 'adv-gambit');
     const id = view.gambit.taken?.id ?? view.gambit.offer!.id;
     g.dataset.gambit = id;
     const gInfo = el('div', 'adv-gambit-info');
-    gInfo.append(el('b', undefined, `${s.gambit} · ${GAMBITS[id].name[lang]}`));
-    gInfo.append(el('span', undefined, view.gambit.taken ? `${GAMBITS[id].line[lang]} (+${view.gambit.taken.bonus})` : view.gambit.offer!.line));
+    const gambitHeader = skin ? `${lex.gambitTitle[lang]} · ${lex.gambitNames[id][lang]}` : `${s.gambit} · ${GAMBITS[id].name[lang]}`;
+    const gambitDesc = skin
+      ? (view.gambit.taken
+          ? `${lang === 'zh' ? lex.gambitNames[id].lineZh : lex.gambitNames[id].lineEn} (+${view.gambit.taken.bonus} CP)`
+          : replaceAncientTerms(view.gambit.offer!.line, skin, lang))
+      : (view.gambit.taken ? `${GAMBITS[id].line[lang]} (+${view.gambit.taken.bonus})` : view.gambit.offer!.line);
+    gInfo.append(el('b', undefined, gambitHeader));
+    gInfo.append(el('span', undefined, gambitDesc));
     const b = el('button', 'adv-take', view.gambit.taken ? s.taken : s.take);
     b.type = 'button';
     b.dataset.gambitTake = '';

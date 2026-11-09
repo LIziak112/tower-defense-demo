@@ -16,14 +16,47 @@ import { paletteForContext } from './skins';
 import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type AdvisorView } from '../advisor/index';
 import { slotCell } from '../advisor/snapshot';
 import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
-import { createSpatialProjector, drawSpatialBattlefield, getMinionModelKind, type SpatialProjector } from './spatialMap';
+import {
+  createSpatialProjector,
+  drawSpatialBattlefield,
+  getMinionModelKind,
+  type FloatingPopup,
+  type ShieldRipple,
+  type SpatialProjector,
+  type SpatialShot,
+} from './spatialMap';
 import { cleanTechTerms, escHtml, extractNaturalAdvisorSpeech } from './chatFormat';
+import {
+  buildCulturalMappingTable,
+  computeCounterPreview,
+  getCulturalLexicon,
+  localizePackForSkin,
+  replaceAncientTerms,
+  type CrisisAffixSpec,
+  type EdictOptionSpec,
+} from './culturalThemes';
 
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed') ?? 20261107) >>> 0;
 const DEBUG = params.has('debug');
 const TICK_MS = 1000 / TICKS_PER_SECOND;
 const PX = 56; // px per cell
+let baseRawPack: ContentPack = DEFAULT_PACK;
+let selectedEdictId: EdictOptionSpec['id'] | null = null;
+let activeAffixIds: CrisisAffixSpec['id'][] = [];
+let userReducedMotionOverride: boolean | null = params.get('reducedMotion') === '1' || params.get('reducedMotion') === 'true'
+  ? true
+  : (params.get('reducedMotion') === '0' || params.get('reducedMotion') === 'false' ? false : null);
+
+function isReducedMotion(): boolean {
+  if (userReducedMotionOverride !== null) return userReducedMotionOverride;
+  if (bridge?.context?.reducedMotion) return true;
+  try {
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+  } catch {}
+  return false;
+}
+
 let pack: ContentPack = DEFAULT_PACK;
 let PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
 const provider = new MockProvider();
@@ -86,7 +119,26 @@ const advisorSel = selectChannel({
 const session = new AdvisorSession({ channel: advisorSel.channel, lang, tactical: !params.has('notactical'), onChange: () => scheduleCard() });
 const llmLevelProvider = advisorSel.channel ? new LlmContentProvider(advisorSel.channel, { lang }) : null;
 
+function activeSkin(): string | null {
+  return bridge.context.skin ?? (hikosMode ? 'union-atlas-3d' : null);
+}
+
+function syncPackLexicon(resetBattle = false) {
+  const sk = activeSkin();
+  if (sk) {
+    pack = localizePackForSkin(baseRawPack, sk, lang, selectedEdictId, activeAffixIds);
+  } else {
+    pack = baseRawPack;
+  }
+  state = {
+    ...state,
+    pack,
+    ...(resetBattle && state.tick === 0 ? { gold: pack.map.starting_gold, base_hp: pack.map.base_hp } : {}),
+  };
+}
+
 let state: BattleState = createBattle(pack, SEED);
+syncPackLexicon(true);
 let queue: Command[] = [];
 let selected = pack.towers[0].id;
 let inLobby = !params.has('skiplobby');
@@ -98,7 +150,24 @@ let toastUntil = 0;
 
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; }
 const particles: Particle[] = [];
-const shots: { fx: number; fy: number; tx: number; ty: number; until: number }[] = [];
+const shots: SpatialShot[] = [];
+const floatingPopups: FloatingPopup[] = [];
+const shieldRipples: ShieldRipple[] = [];
+const towerRecoils = new Map<number, number>();
+const enemyHitFlashes = new Map<number, number>();
+let hitStopUntil = 0;
+let screenShakeUntil = 0;
+let vfxStats = {
+  shotsFired: 0,
+  muzzleFlashes: 0,
+  recoils: 0,
+  hitFlashes: 0,
+  hitStops: 0,
+  shieldRipples: 0,
+  armorBreakPopups: 0,
+  baseRipples: 0,
+  screenShakes: 0,
+};
 const recorded: { tick: number; cmds: Command[] }[] = [];
 
 const root = document.getElementById('game-container')!;
@@ -135,7 +204,7 @@ function renderCard() {
       if (c) queue.push(c);
     },
     setAutopilot: (on) => session.setAutopilot(on),
-  });
+  }, activeSkin());
   fit();
 }
 
@@ -189,9 +258,10 @@ function applyContext(c: HostContext) {
   // 宿主 context 一到就定军师可用性：没配（enabled:false）或老宿主（没有 advisor 字段）→ 不白等截止，秒切本地；排队中的请求随之放行 / 作废
   hostChannel?.setAvailable(c.advisor?.enabled === true);
   if (!legacyPalette) { theme = paletteForContext(c); currentTheme = 'hikos'; }
+  syncPackLexicon(false);
   applyPalette();
   syncProjector();
-  if (inLobby) refreshLobbyIdentity();
+  if (inLobby) showLobby(lastSum);
   renderHud();
   scheduleCard();
 }
@@ -316,7 +386,7 @@ function renderHud() {
   w.textContent = s.phase === 'won' || s.phase === 'lost' ? t('restart') : t('start');
   w.disabled = s.phase === 'wave';
   w.onclick = () => {
-    if (s.phase === 'won' || s.phase === 'lost') { startWith(pack); showLobby(); }
+    if (s.phase === 'won' || s.phase === 'lost') { startWith(baseRawPack); showLobby(); }
     else {
       if (inLobby) enterBattleInSitu();
       queue.push({ type: 'start_wave' });
@@ -330,6 +400,26 @@ function renderHud() {
     rv.onclick = () => { void revenge(); };
     hud.append(rv);
   }
+
+  // 减弱动态开关（大厅 #26153 ②：支持 prefers-reduced-motion / 宿主 reducedMotion / 玩家手动切换，关闭屏震与强闪动效）
+  const rmBtn = document.createElement('button');
+  rmBtn.id = 'td-reduced-motion';
+  const rmOn = isReducedMotion();
+  rmBtn.className = `motion-toggle${rmOn ? ' is-reduced' : ''}`;
+  rmBtn.dataset.reducedMotion = rmOn ? 'true' : 'false';
+  rmBtn.textContent = lang === 'zh'
+    ? (rmOn ? '动效:减弱' : '动效:标准')
+    : (rmOn ? 'Motion:Reduced' : 'Motion:Full');
+  rmBtn.title = lang === 'zh' ? '切换攻防震屏与粒子动效强度' : 'Toggle screen shake & particle intensity';
+  rmBtn.onclick = () => {
+    userReducedMotionOverride = !isReducedMotion();
+    if (userReducedMotionOverride) {
+      screenShakeUntil = 0;
+      hitStopUntil = 0;
+    }
+    renderHud();
+  };
+  hud.append(rmBtn);
 
   if (!hikosMode) {
     // 独立页才有主题下拉；嵌在 Hikos 里配色由宿主皮肤决定
@@ -474,11 +564,114 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'n') queue.push({ type: 'debug_next_wave' });
 });
 
+function screenPointForMilli(mx: number, my: number): { x: number; y: number } {
+  if (isInsitu()) {
+    if (!currentProjector) syncProjector();
+    if (currentProjector) return currentProjector.milliToScreen(mx, my);
+  }
+  return { x: toPx(mx), y: toPx(my) };
+}
+
 function onEvents(evs: GameEvent[]) {
   const now = performance.now();
+  const rm = isReducedMotion();
+  const lex = getCulturalLexicon(activeSkin());
   for (const e of evs) {
     if (e.type === 'build_rejected' || e.type === 'wave_rejected') { toast = e.message; toastUntil = now + 1800; }
-    if (e.type === 'attack') shots.push({ fx: e.fx, fy: e.fy, tx: e.tx, ty: e.ty, until: now + 90 });
+    if (e.type === 'attack') {
+      shots.push({ fx: e.fx, fy: e.fy, tx: e.tx, ty: e.ty, until: now + 115, towerIid: e.tower, targetIid: e.target });
+      towerRecoils.set(e.tower, now + 140);
+      enemyHitFlashes.set(e.target, now + 95);
+      vfxStats.shotsFired++;
+      vfxStats.muzzleFlashes++;
+      vfxStats.recoils++;
+      vfxStats.hitFlashes++;
+
+      const twInst = state.towers.find((t) => t.iid === e.tower);
+      const enInst = state.enemies.find((en) => en.iid === e.target);
+      const twId = twInst?.def ?? 'crossbow';
+      const enId = enInst?.def ?? 'footman';
+      const counter = computeCounterPreview(twId, enId, activeSkin());
+      const hitPt = screenPointForMilli(e.tx, e.ty);
+
+      // 护盾波纹（Shield Ripple）
+      shieldRipples.push({
+        x: hitPt.x,
+        y: hitPt.y,
+        r: 6,
+        maxR: counter.isCounter ? 24 : 17,
+        color: counter.isCounter ? lex.vfx.critColor : lex.vfx.shieldColor,
+        life: 0.28,
+        maxLife: 0.28,
+        isBase: false,
+      });
+      vfxStats.shieldRipples++;
+
+      // 受击碎屑粒子（非减弱动态下触发）
+      if (!rm) {
+        const shardCount = counter.isCounter ? 8 : 4;
+        for (let i = 0; i < shardCount; i++) {
+          const ang = (Math.PI * 2 * i) / shardCount + (e.target % 3) * 0.2;
+          const spd = 45 + (i % 3) * 25;
+          particles.push({
+            x: hitPt.x,
+            y: hitPt.y,
+            vx: Math.cos(ang) * spd,
+            vy: Math.sin(ang) * spd - 15,
+            life: 0.32,
+            maxLife: 0.32,
+            color: counter.isCounter ? lex.vfx.critColor : lex.vfx.shieldColor,
+          });
+        }
+      }
+
+      // 破甲/破盾跳字与重击短帧顿挫（Hit-stop）+ 轻度屏震
+      const twDef = pack.towers.find((d) => d.id === twId);
+      const dmgVal = twDef?.damage ?? 15;
+      const isHeavyShot = dmgVal >= 35 || counter.isCounter;
+      const popupText = counter.isCounter
+        ? `${lang === 'zh' ? counter.tagZh : counter.tagEn} -${dmgVal}`
+        : `-${dmgVal}`;
+      floatingPopups.push({
+        x: hitPt.x,
+        y: hitPt.y - 14,
+        text: popupText,
+        color: counter.isCounter ? lex.vfx.critColor : (theme.paper ?? '#ffffff'),
+        critical: isHeavyShot,
+        life: 0.55,
+        maxLife: 0.55,
+      });
+      if (isHeavyShot) {
+        vfxStats.armorBreakPopups++;
+        if (!rm) {
+          hitStopUntil = Math.max(hitStopUntil, now + lex.vfx.hitStopMs);
+          screenShakeUntil = Math.max(screenShakeUntil, now + 160);
+          vfxStats.hitStops++;
+          vfxStats.screenShakes++;
+        }
+      }
+    }
+
+    if (e.type === 'entity_escaped') {
+      // 基地受创时触发基地能量护盾涟漪与轻度屏幕震动
+      const endCell = pack.map.path[pack.map.path.length - 1] ?? { x: pack.map.width - 1, y: pack.map.height - 1 };
+      const basePt = screenPointForMilli(endCell.x * CELL + 500, endCell.y * CELL + 500);
+      shieldRipples.push({
+        x: basePt.x,
+        y: basePt.y,
+        r: 12,
+        maxR: 46,
+        color: theme.danger ?? '#ff5238',
+        life: 0.55,
+        maxLife: 0.55,
+        isBase: true,
+      });
+      vfxStats.baseRipples++;
+      if (!rm) {
+        screenShakeUntil = Math.max(screenShakeUntil, now + 240);
+        vfxStats.screenShakes++;
+      }
+    }
 
     if (e.type === 'wave_cleared') {
       const btn = document.getElementById('start-wave');
@@ -487,17 +680,16 @@ function onEvents(evs: GameEvent[]) {
     if (e.type === 'battle_ended') {
       settleCurrentMatch(e.result);
     }
-    if (e.type === 'entity_died' && !bridge.context.reducedMotion) {
-      const pt = isInsitu() && currentProjector ? currentProjector.milliToScreen(e.x, e.y) : { x: toPx(e.x), y: toPx(e.y) };
-      for (let i = 0; i < 15; i++) {
+    if (e.type === 'entity_died' && !rm) {
+      const pt = screenPointForMilli(e.x, e.y);
+      for (let i = 0; i < 12; i++) {
         particles.push({
           x: pt.x, y: pt.y,
           vx: (Math.random() - 0.5) * 100, vy: (Math.random() - 0.5) * 100,
-          life: 0.5 + Math.random() * 0.5, maxLife: 1.0, color: theme.danger ?? '#f55'
+          life: 0.45 + Math.random() * 0.35, maxLife: 0.8, color: theme.danger ?? '#f55'
         });
       }
     }
-
   }
 }
 
@@ -515,6 +707,15 @@ function tickOnce() {
     particles[i].y += particles[i].vy * dt;
     particles[i].life -= dt;
     if (particles[i].life <= 0) particles.splice(i, 1);
+  }
+  for (let i = floatingPopups.length - 1; i >= 0; i--) {
+    floatingPopups[i].y -= 22 * dt;
+    floatingPopups[i].life -= dt;
+    if (floatingPopups[i].life <= 0) floatingPopups.splice(i, 1);
+  }
+  for (let i = shieldRipples.length - 1; i >= 0; i--) {
+    shieldRipples[i].life -= dt;
+    if (shieldRipples[i].life <= 0) shieldRipples.splice(i, 1);
   }
 
   if (r.events.length || cmds.length) renderHud();
@@ -539,6 +740,12 @@ function draw() {
       hoverCell,
       shots,
       particles,
+      floatingPopups,
+      shieldRipples,
+      towerRecoils,
+      enemyHitFlashes,
+      screenShakeUntil,
+      reducedMotion: isReducedMotion(),
       now: performance.now(),
       inLobby,
       lang,
@@ -640,7 +847,8 @@ function draw() {
 let acc = 0; let last = performance.now();
 let firstFrame = true;
 function frame(now: number) {
-  acc += Math.min(250, now - last) * (paused || inLobby || hostHidden ? 0 : speed); last = now;
+  const inHitStop = !isReducedMotion() && now < hitStopUntil;
+  acc += Math.min(250, now - last) * (paused || inLobby || hostHidden || inHitStop ? 0 : speed); last = now;
   let n = 0;
   while (acc >= TICK_MS && n < 16) { tickOnce(); acc -= TICK_MS; n++; }
   if (!hostHidden || firstFrame) draw();
@@ -648,13 +856,13 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-// ---- D2 lobby: 皮肤化紧凑「军师议事」对话框 + 聊天式自然语言 AI 输出（去除原始 JSON 与「流式」技术词） ----
+// ---- D2 lobby: 皮肤化紧凑参谋议事对话框 + 战前敕令三选一 + 兵种克制与路线分流 + 危机挑战词缀 ----
 const lobby = document.createElement('div');
 lobby.id = 'lobby';
 root.append(lobby);
 const esc = escHtml;
 const safeAvatar = (u?: string) => !!u && (/^data:image\/(svg\+xml|png|jpeg|webp|gif)[;,]/i.test(u) || /^https?:\/\//i.test(u) || u.startsWith('/'));
-let designing = false;   // 关卡设计军师（LLM）出活中：按钮置灰，防连点
+let designing = false;   // 关卡设计参谋（LLM）出活中：按钮置灰，防连点
 let lastSum: Summary | undefined;
 
 function activeAdvisorAgent(): AdvisorAgent | null {
@@ -662,30 +870,27 @@ function activeAdvisorAgent(): AdvisorAgent | null {
 }
 
 function lobbyIdentityHtml(sum?: Summary): string {
+  const sk = activeSkin();
+  const lex = getCulturalLexicon(sk);
   const ag = activeAdvisorAgent();
   const rawWho = sum?.provider ?? (llmLevelProvider ? llmLevelProvider.name : provider.name);
-  const who = cleanTechTerms(rawWho, lang);
+  const who = sk ? replaceAncientTerms(cleanTechTerms(rawWho, lang), sk, lang) : cleanTechTerms(rawWho, lang);
   const avHtml = ag?.name
     ? (safeAvatar(ag.avatar)
         ? `<img class="lobby-adv-av" src="${esc(ag.avatar!)}" alt="${esc(ag.name)}">`
-        : `<span class="lobby-adv-av lobby-adv-glyph"${ag.color ? ` style="--adv-c:${esc(ag.color)}"` : ''}>${esc([...ag.name][0] ?? '军')}</span>`)
-    : `<span class="lobby-adv-av lobby-adv-glyph">军</span>`;
+        : `<span class="lobby-adv-av lobby-adv-glyph"${ag.color ? ` style="--adv-c:${esc(ag.color)}"` : ''}>${esc([...ag.name][0] ?? lex.advisorGlyph.zh)}</span>`)
+    : `<span class="lobby-adv-av lobby-adv-glyph">${esc(sk ? lex.advisorGlyph[lang] : '军')}</span>`;
   const personaAttr = ag?.persona ? ` title="${esc(ag.persona)}"` : '';
   const personaHtml = ag?.persona ? `<p class="lobby-persona" id="lobby-persona" hidden>${esc(ag.persona)}</p>` : '';
-  return `<div id="lobby-head"${personaAttr}><h3>${avHtml}<span class="lobby-title-text">军师议事</span> <small id="lobby-who">${esc(who)}</small></h3>${personaHtml}</div>`;
-}
-
-function refreshLobbyIdentity() {
-  const head = lobby.querySelector('#lobby-head');
-  if (!head) return;
-  const wrap = document.createElement('div');
-  wrap.innerHTML = lobbyIdentityHtml(lastSum);
-  if (wrap.firstElementChild) head.replaceWith(wrap.firstElementChild);
+  const councilHeading = sk ? lex.councilTitle[lang] : (lang === 'zh' ? '军师议事' : 'Tactical Council');
+  return `<div id="lobby-head"${personaAttr}><h3>${avHtml}<span class="lobby-title-text" id="lobby-council-title">${esc(councilHeading)}</span> <small id="lobby-who">${esc(who)}</small></h3>${personaHtml}</div>`;
 }
 
 function renderLobbyStream(p: LevelStreamProgress) {
   const out = lobby.querySelector('#summary');
   if (!out) return;
+  const sk = activeSkin();
+  const lex = getCulturalLexicon(sk);
   let box = out.querySelector('.stream-box') as HTMLElement | null;
   if (!box) {
     out.innerHTML = `<div class="stream-box lobby-chat-bubble" id="lobby-stream"><div class="stream-head"><span class="adv-pulse-dot"></span><p class="stream-stage" id="stream-stage"></p></div><div class="stream-parsed chat-md-body" id="stream-parsed"></div></div>`;
@@ -694,23 +899,61 @@ function renderLobbyStream(p: LevelStreamProgress) {
   const stageEl = out.querySelector('#stream-stage');
   const parsedEl = out.querySelector('#stream-parsed');
   const ag = activeAdvisorAgent();
-  const actor = ag?.name ? `军师「${ag.name}」` : cleanTechTerms(p.provider || '军师', lang);
-  const stageText = cleanTechTerms(p.stage || '正在推演阵法与兵力部署…', lang);
+  const actor = ag?.name ? `${lex.advisorRole[lang]}「${ag.name}」` : (sk ? replaceAncientTerms(cleanTechTerms(p.provider || lex.advisorRole.zh, lang), sk, lang) : cleanTechTerms(p.provider || '军师', lang));
+  const stageText = sk ? replaceAncientTerms(cleanTechTerms(p.stage || '正在推演防线与兵力部署…', lang), sk, lang) : cleanTechTerms(p.stage || '正在推演阵法与兵力部署…', lang);
   if (stageEl) {
     stageEl.textContent = `${actor} · ${stageText}`;
   }
   if (parsedEl) {
-    // 复用聊天式自然语言提取器：将增量内容渲染成通顺的军师自然语言战策段落，绝不展示原始 JSON
     parsedEl.innerHTML = extractNaturalAdvisorSpeech(p.text, stageText, lang);
   }
 }
 
 function showLobby(sum?: Summary, text = '') {
-  inLobby = true; lobby.style.display = 'block'; advisorBox.style.display = 'none';
+  inLobby = true; lobby.style.display = 'block'; advisorBox.style.display = isInsitu() ? 'block' : 'none';
   lastSum = sum;
+  const sk = activeSkin();
+  const lex = getCulturalLexicon(sk);
+  const presets = sk
+    ? lex.presets
+    : [
+        { label: '长坂坡雨夜', prompt: '长坂坡雨夜，轻骑突袭' },
+        { label: '水路伏击', prompt: '水路栈道伏击，人海战术' },
+        { label: '重甲攻城', prompt: '重甲铁骑攻城，高CP奖励' },
+      ];
+  const placeholderText = sk ? lex.placeholder[lang] : '输入战局构想，例如：长坂坡雨夜，轻骑突袭';
+  const edictsHtml = `<div class="lobby-section-title"><span>${esc(lex.edictTitle[lang])}</span><small>${lang === 'zh' ? '风险—回报抉择' : 'Risk-Reward'}</small></div>
+    <div class="edict-grid" id="lobby-edicts">
+      ${lex.edicts.map((ed) => {
+        const active = selectedEdictId === ed.id;
+        return `<button type="button" class="edict-card${active ? ' active' : ''}" data-edict="${esc(ed.id)}">
+          <b>${esc(ed.name[lang])}</b><span>+${esc(ed.upside[lang])} / -${esc(ed.downside[lang])}</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+
+  const crisisRank = activeAffixIds.length;
+  const affixesHtml = `<div class="lobby-section-title"><span>${esc(lex.affixTitle[lang])}</span><small id="td-crisis-rating">${lang === 'zh' ? `挑战评级 R${crisisRank}` : `Crisis R${crisisRank}`}</small></div>
+    <div class="affix-row" id="lobby-affixes">
+      ${lex.affixes.map((af) => {
+        const active = activeAffixIds.includes(af.id);
+        return `<button type="button" class="affix-chip${active ? ' active' : ''}" data-affix="${esc(af.id)}" title="${esc(af.desc[lang])}">
+          ${esc(af.name[lang])}
+        </button>`;
+      }).join('')}
+    </div>`;
+
+  const counterHtml = `<div class="counter-matrix" id="lobby-counters">
+    <div><strong>${lang === 'zh' ? '兵种克制' : 'Counters'}</strong>：${esc(lex.towers.crossbow[lang])}克${esc(lex.enemies.footman[lang])} · ${esc(lex.towers.fire_brazier[lang])}克${esc(lex.enemies.light_cavalry[lang])} · ${esc(lex.towers.catapult[lang])}克${esc(lex.enemies.heavy_armor[lang])}</div>
+    <div><strong>${lang === 'zh' ? '路线分流' : 'Route Split'}</strong>：${esc(lex.routeSplitLabel[lang])}</div>
+  </div>`;
+
   lobby.innerHTML = `<div class="card">${lobbyIdentityHtml(sum)}
-  <textarea id="desc" rows="2" placeholder="输入战局构想，例如：长坂坡雨夜，轻骑突袭">${esc(text)}</textarea>
-  <div class="lobby-presets"><button type="button" class="preset-chip" data-preset="长坂坡雨夜，轻骑突袭">长坂坡雨夜</button><button type="button" class="preset-chip" data-preset="水路栈道伏击，人海战术">水路伏击</button><button type="button" class="preset-chip" data-preset="重甲铁骑攻城，高CP奖励">重甲攻城</button></div>
+  <textarea id="desc" rows="2" placeholder="${esc(placeholderText)}">${esc(text)}</textarea>
+  <div class="lobby-presets">${presets.map((pr) => `<button type="button" class="preset-chip" data-preset="${esc(pr.prompt)}">${esc(pr.label)}</button>`).join('')}</div>
+  ${edictsHtml}
+  ${affixesHtml}
+  ${counterHtml}
   <div class="row"><button id="gen" class="primary-btn"${designing ? ' disabled' : ''}>${designing ? '军师推演中…' : '让军师设计'}</button><button id="td-direct-play" class="ghost-btn" type="button">直接原位布防</button></div>
   <div id="summary"></div></div>`;
 
@@ -722,28 +965,51 @@ function showLobby(sum?: Summary, text = '') {
     });
   });
 
+  lobby.querySelectorAll('[data-edict]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.edict as EdictOptionSpec['id'];
+      selectedEdictId = selectedEdictId === id ? null : id;
+      syncPackLexicon(true);
+      renderHud();
+      showLobby(lastSum, (lobby.querySelector('#desc') as HTMLTextAreaElement | null)?.value ?? text);
+    });
+  });
+
+  lobby.querySelectorAll('[data-affix]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.affix as CrisisAffixSpec['id'];
+      if (activeAffixIds.includes(id)) activeAffixIds = activeAffixIds.filter((x) => x !== id);
+      else activeAffixIds = [...activeAffixIds, id];
+      syncPackLexicon(true);
+      renderHud();
+      showLobby(lastSum, (lobby.querySelector('#desc') as HTMLTextAreaElement | null)?.value ?? text);
+    });
+  });
+
   lobby.querySelector('#td-direct-play')?.addEventListener('click', () => enterBattleInSitu());
   const out = lobby.querySelector('#summary')!;
   if (designing && !sum) {
     const ag = activeAdvisorAgent();
-    const actor = ag?.name ? `军师「${ag.name}」` : cleanTechTerms(llmLevelProvider?.name ?? '军师', lang);
-    out.innerHTML = `<div class="stream-box lobby-chat-bubble" id="lobby-stream"><div class="stream-head"><span class="adv-pulse-dot"></span><p class="stream-stage" id="stream-stage">${esc(actor)} · 正在勘察地形并推演阵法…</p></div><div class="stream-parsed chat-md-body" id="stream-parsed"><p class="chat-md-p">正在结合当前地图地势编排兵种与防线…</p></div></div>`;
+    const actor = ag?.name ? `${lex.advisorRole[lang]}「${ag.name}」` : (sk ? lex.advisorRole[lang] : cleanTechTerms(llmLevelProvider?.name ?? '军师', lang));
+    out.innerHTML = `<div class="stream-box lobby-chat-bubble" id="lobby-stream"><div class="stream-head"><span class="adv-pulse-dot"></span><p class="stream-stage" id="stream-stage">${esc(actor)} · 正在勘察地形并推演防线…</p></div><div class="stream-parsed chat-md-body" id="stream-parsed"><p class="chat-md-p">正在结合当前地图地势编排单位与防卫设施…</p></div></div>`;
   } else if (sum) {
     const ag = activeAdvisorAgent();
-    const speaker = ag?.name ? `${ag.name}${ag.title ? `（${ag.title}）` : ''}` : cleanTechTerms(sum.provider, lang);
-    const cleanNote = sum.note ? cleanTechTerms(sum.note, lang) : '';
+    const speaker = ag?.name ? `${ag.name}${ag.title ? `（${ag.title}）` : ''}` : (sk ? replaceAncientTerms(cleanTechTerms(sum.provider, lang), sk, lang) : cleanTechTerms(sum.provider, lang));
+    const cleanNote = sum.note ? (sk ? replaceAncientTerms(cleanTechTerms(sum.note, lang), sk, lang) : cleanTechTerms(sum.note, lang)) : '';
     const greedyRun = sum.dryrun.find((d) => d.bot === 'greedy');
     const simLine = greedyRun
-      ? `我已在沙盘推演过此阵：若在折角要冲合理布设防线，可稳守母星（预计基地余量 ${greedyRun.base_hp}，仅漏 ${greedyRun.leaks} 骑）。`
+      ? `沙盘预演结论：若在折角要冲合理布设防线，可稳守核心（预计余量 ${greedyRun.base_hp}，仅漏 ${greedyRun.leaks} 单位）。`
       : '';
+    const localizedTowers = sum.towers.map((tw) => sk ? replaceAncientTerms(cleanTechTerms(tw, lang), sk, lang) : cleanTechTerms(tw, lang));
+    const localizedEnemies = sum.enemies.map((en) => sk ? replaceAncientTerms(cleanTechTerms(en, lang), sk, lang) : cleanTechTerms(en, lang));
     out.innerHTML = `<div class="lobby-chat-bubble result-bubble">
-      <div class="chat-msg-head"><strong>${esc(speaker)}</strong><span>阵法成稿</span></div>
-      <p class="echo">${esc(cleanTechTerms(sum.echo, lang))}</p>
+      <div class="chat-msg-head"><strong>${esc(speaker)}</strong><span>防线成稿</span></div>
+      <p class="echo">${esc(sk ? replaceAncientTerms(cleanTechTerms(sum.echo, lang), sk, lang) : cleanTechTerms(sum.echo, lang))}</p>
       ${simLine ? `<p class="dry">${esc(simLine)}</p>` : ''}
       <div class="lobby-pack-grid">
-        <div><span class="meta-k">守军器械</span><span class="meta-v">${esc(sum.towers.join(' · '))}</span></div>
-        <div><span class="meta-k">敌军先锋</span><span class="meta-v">${esc(sum.enemies.join(' · '))}</span></div>
-        <div><span class="meta-k">攻势编组</span><span class="meta-v">共 ${sum.waves.length} 波（${sum.waves.map((w, i) => `W${i + 1}:${w.total}骑`).join(' / ')}）</span></div>
+        <div><span class="meta-k">防卫设施</span><span class="meta-v">${esc(localizedTowers.join(' · '))}</span></div>
+        <div><span class="meta-k">来袭单位</span><span class="meta-v">${esc(localizedEnemies.join(' · '))}</span></div>
+        <div><span class="meta-k">攻势编组</span><span class="meta-v">共 ${sum.waves.length} 波（${sum.waves.map((w, i) => `W${i + 1}:${w.total}`).join(' / ')}）</span></div>
       </div>
       ${cleanNote ? `<p class="warn">${esc(cleanNote)}</p>` : ''}
       ${sum.warnings.map((w) => `<p class="warn">⚠ ${esc(w.message)}</p>`).join('')}
@@ -754,7 +1020,7 @@ function showLobby(sum?: Summary, text = '') {
     out.querySelector('#again')!.addEventListener('click', () => (lobby.querySelector('#desc') as HTMLTextAreaElement).focus());
   }
   lobby.querySelector('#gen')!.addEventListener('click', () => {
-    const tx = (lobby.querySelector('#desc') as HTMLTextAreaElement).value.trim() || '长坂坡雨夜';
+    const tx = (lobby.querySelector('#desc') as HTMLTextAreaElement).value.trim() || presets[0].prompt;
     void design(tx);
   });
   reportState();
@@ -788,13 +1054,21 @@ async function revenge() {
   }
 }
 function startWith(p: ContentPack) {
-  pack = p;
+  baseRawPack = p;
+  syncPackLexicon(false);
   PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
   syncProjector();
   selected = pack.towers[0].id;
   matchSeq++;
   lastSettlement = null;
-  state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; queue = [];
+  state = createBattle(pack, SEED);
+  recorded.length = 0;
+  shots.length = 0;
+  floatingPopups.length = 0;
+  shieldRipples.length = 0;
+  towerRecoils.clear();
+  enemyHitFlashes.clear();
+  queue = [];
   inLobby = false; lobby.style.display = 'none'; renderHud();
   session.reset(state);
   scheduleCard();
@@ -817,6 +1091,124 @@ requestAnimationFrame(frame);
       penaltyLossCp: MATCH_LOSS_CP,
       lastSettlement,
     };
+  },
+  get cultural() {
+    const sk = activeSkin();
+    const lex = getCulturalLexicon(sk);
+    return {
+      skin: lex.skin,
+      worldTitle: lex.worldTitle[lang],
+      councilTitle: lex.councilTitle[lang],
+      advisorRole: lex.advisorRole[lang],
+      baseTitle: lex.baseTitle[lang],
+      spawnTitle: lex.spawnTitle[lang],
+      gambitTitle: lex.gambitTitle[lang],
+      towers: pack.towers.map((t) => ({
+        id: t.id,
+        name: t.display_name,
+        weapon: lex.towers[t.id]?.[lang === 'zh' ? 'weaponZh' : 'weaponEn'] ?? '',
+        role: lex.towers[t.id]?.[lang === 'zh' ? 'roleZh' : 'roleEn'] ?? '',
+      })),
+      enemies: pack.enemies.map((e) => ({
+        id: e.id,
+        name: e.display_name,
+        trait: lex.enemies[e.id]?.[lang === 'zh' ? 'traitLabelZh' : 'traitLabelEn'] ?? '',
+        counteredBy: lex.enemies[e.id]?.[lang === 'zh' ? 'counteredByZh' : 'counteredByEn'] ?? '',
+      })),
+      mappingTable: buildCulturalMappingTable(),
+    };
+  },
+  get vfx() {
+    const lex = getCulturalLexicon(activeSkin());
+    return {
+      projectileStyle: lex.vfx.projectileStyle,
+      reducedMotion: isReducedMotion(),
+      activeShots: shots.length,
+      activePopups: floatingPopups.length,
+      activeRipples: shieldRipples.length,
+      activeParticles: particles.length,
+      screenShaking: !isReducedMotion() && performance.now() < screenShakeUntil,
+      hitStopping: !isReducedMotion() && performance.now() < hitStopUntil,
+      stats: { ...vfxStats },
+    };
+  },
+  get tactics() {
+    const lex = getCulturalLexicon(activeSkin());
+    return {
+      selectedEdictId,
+      edicts: lex.edicts,
+      activeAffixIds: [...activeAffixIds],
+      affixes: lex.affixes,
+      crisisRating: `R${activeAffixIds.length}`,
+      routeSplitLabel: lex.routeSplitLabel[lang],
+      counterMatrix: pack.towers.map((tw) => ({
+        towerId: tw.id,
+        towerName: tw.display_name,
+        vs: pack.enemies.map((en) => ({
+          enemyId: en.id,
+          enemyName: en.display_name,
+          ...computeCounterPreview(tw.id, en.id, activeSkin()),
+        })),
+      })),
+    };
+  },
+  setReducedMotion: (on: boolean | null) => {
+    userReducedMotionOverride = on;
+    if (isReducedMotion()) {
+      screenShakeUntil = 0;
+      hitStopUntil = 0;
+    }
+    renderHud();
+    draw();
+    return isReducedMotion();
+  },
+  selectEdict: (id: EdictOptionSpec['id'] | null) => {
+    selectedEdictId = id;
+    syncPackLexicon(true);
+    if (inLobby) showLobby(lastSum);
+    renderHud();
+    return selectedEdictId;
+  },
+  toggleAffix: (id: CrisisAffixSpec['id']) => {
+    if (activeAffixIds.includes(id)) activeAffixIds = activeAffixIds.filter((x) => x !== id);
+    else activeAffixIds = [...activeAffixIds, id];
+    syncPackLexicon(true);
+    if (inLobby) showLobby(lastSum);
+    renderHud();
+    return [...activeAffixIds];
+  },
+  triggerDemoCombatVfx: () => {
+    if (inLobby) enterBattleInSitu();
+    if (!state.towers.length && currentProjector?.tacticalSlots.length) {
+      const s0 = currentProjector.tacticalSlots[0];
+      const s1 = currentProjector.tacticalSlots[1] ?? s0;
+      state.towers.push(
+        { iid: 901, def: pack.towers[0].id, cx: s0.x, cy: s0.y, x: (s0.x + 0.5) * CELL, y: (s0.y + 0.5) * CELL, cooldown: 0, life: 'alive' },
+        { iid: 902, def: (pack.towers[1] ?? pack.towers[0]).id, cx: s1.x, cy: s1.y, x: (s1.x + 0.5) * CELL, y: (s1.y + 0.5) * CELL, cooldown: 0, life: 'alive' },
+      );
+    }
+    if (!state.enemies.length) {
+      const pMid = pack.map.path[Math.min(2, pack.map.path.length - 1)];
+      state.enemies.push({
+        iid: 951,
+        def: pack.enemies[0].id,
+        hp: Math.round(pack.enemies[0].hp * 0.65),
+        progress: 2400,
+        x: (pMid.x + 0.5) * CELL,
+        y: (pMid.y + 0.5) * CELL,
+        life: 'alive',
+      });
+    }
+    const tw = state.towers[0];
+    const en = state.enemies[0];
+    if (tw && en) {
+      onEvents([
+        { type: 'attack', tower: tw.iid, target: en.iid, fx: tw.x, fy: tw.y, tx: en.x, ty: en.y },
+        { type: 'entity_escaped', iid: 999, base_damage: 1 },
+      ]);
+      draw();
+    }
+    return (window as any).__td.vfx;
   },
   settleNow: (outcome: 'won' | 'lost') => {
     state = { ...state, phase: outcome, base_hp: outcome === 'lost' ? 0 : Math.max(1, state.base_hp) };
