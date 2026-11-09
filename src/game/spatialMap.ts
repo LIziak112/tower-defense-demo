@@ -21,6 +21,39 @@ export interface HostSpatialNode {
   wz?: number;
 }
 
+export type MinionModelKind = 'vehicle' | 'heavy_vehicle' | 'pedestrian';
+
+export function getMinionModelKind(
+  def: { id: string; display_name: string; hp: number; speed: number },
+  skin?: string | null,
+): MinionModelKind {
+  const tag = `${def.id} ${def.display_name}`;
+  if (def.hp >= 200 || /heavy|ram|boss|shield|tank|truck|barge|重|甲|车|锤|盾|船/i.test(tag)) {
+    return 'heavy_vehicle';
+  }
+  if (def.speed >= 82 || /cavalry|raider|hound|scout|fast|car|骑|斥候|轻|狼|快/i.test(tag) || skin === 'harbor-district-3d') {
+    return 'vehicle';
+  }
+  return 'pedestrian';
+}
+
+export interface RoadSegment {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  kind: 'native' | 'bridge';
+  label?: string;
+}
+
+export interface RoadPlan {
+  segments: RoadSegment[];
+  nativeRatio: number;
+  bridgeRatio: number;
+  startBuilding: HostSpatialNode;
+  endBuilding: HostSpatialNode;
+}
+
 export interface HostSpatialMap {
   skin: string | null;
   layout: string | null;
@@ -34,6 +67,12 @@ export interface HostSpatialMap {
   worldDepth?: number;
   center: { x: number; y: number };
   home: HostSpatialNode | null;
+  spawnBuilding?: HostSpatialNode | null;
+  baseBuilding?: HostSpatialNode | null;
+  nativeRoads?: RoadSegment[];
+  nativeRoadRatio?: number;
+  bridgeRoadRatio?: number;
+  ambientTrafficCleared?: boolean;
   landmarks: HostSpatialNode[];
   nodes: HostSpatialNode[];
 }
@@ -60,6 +99,8 @@ export interface SpatialProjector {
   readonly cellPx: number;
   readonly tacticalSlots: TacticalSlot[];
   readonly hostMap: HostSpatialMap | null;
+  readonly roadPlan: RoadPlan;
+  readonly waypoints: { x: number; y: number }[];
   /** 逻辑连续格坐标 (gx, gy)（格中心为 cx+0.5, cy+0.5）→ 空间地图画布像素坐标 (x, y) */
   cellToScreen(gx: number, gy: number): { x: number; y: number };
   /** 毫格坐标 (mx, my) → 空间地图画布像素坐标 (x, y) */
@@ -93,6 +134,21 @@ function parseNode(raw: unknown): HostSpatialNode | null {
   };
 }
 
+function parseRoadSeg(raw: unknown): RoadSegment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.x0 !== 'number' || typeof r.y0 !== 'number' || typeof r.x1 !== 'number' || typeof r.y1 !== 'number') return null;
+  if (!Number.isFinite(r.x0) || !Number.isFinite(r.y0) || !Number.isFinite(r.x1) || !Number.isFinite(r.y1)) return null;
+  return {
+    x0: Math.round(r.x0 * 10) / 10,
+    y0: Math.round(r.y0 * 10) / 10,
+    x1: Math.round(r.x1 * 10) / 10,
+    y1: Math.round(r.y1 * 10) / 10,
+    kind: r.kind === 'bridge' ? 'bridge' : 'native',
+    ...(typeof r.label === 'string' ? { label: r.label.slice(0, 48) } : {}),
+  };
+}
+
 export function parseSpatialMap(raw: unknown, prev: HostSpatialMap | null = null): HostSpatialMap | null {
   if (raw === undefined) return prev;
   if (!raw || typeof raw !== 'object') return null;
@@ -100,6 +156,11 @@ export function parseSpatialMap(raw: unknown, prev: HostSpatialMap | null = null
   const w = num(m.w, prev?.w ?? 960, 200, 4096);
   const h = num(m.h, prev?.h ?? 640, 200, 4096);
   const home = parseNode(m.home);
+  const spawnBuilding = parseNode(m.spawnBuilding) ?? prev?.spawnBuilding ?? null;
+  const baseBuilding = parseNode(m.baseBuilding) ?? home ?? prev?.baseBuilding ?? null;
+  const nativeRoads = Array.isArray(m.nativeRoads)
+    ? m.nativeRoads.map(parseRoadSeg).filter((x): x is RoadSegment => x !== null).slice(0, 64)
+    : prev?.nativeRoads;
   const landmarks = Array.isArray(m.landmarks) ? m.landmarks.map(parseNode).filter((x): x is HostSpatialNode => x !== null).slice(0, 16) : (prev?.landmarks ?? []);
   const nodes = Array.isArray(m.nodes) ? m.nodes.map(parseNode).filter((x): x is HostSpatialNode => x !== null).slice(0, 48) : (prev?.nodes ?? []);
   const cRaw = m.center && typeof m.center === 'object' ? (m.center as Record<string, unknown>) : null;
@@ -120,6 +181,12 @@ export function parseSpatialMap(raw: unknown, prev: HostSpatialMap | null = null
     worldDepth: num(m.worldDepth, prev?.worldDepth ?? 90, 20, 2000),
     center,
     home,
+    spawnBuilding,
+    baseBuilding,
+    ...(nativeRoads ? { nativeRoads } : {}),
+    ...(typeof m.nativeRoadRatio === 'number' && Number.isFinite(m.nativeRoadRatio) ? { nativeRoadRatio: Math.max(0.8, Math.min(1, m.nativeRoadRatio)) } : {}),
+    ...(typeof m.bridgeRoadRatio === 'number' && Number.isFinite(m.bridgeRoadRatio) ? { bridgeRoadRatio: Math.max(0, Math.min(0.2, m.bridgeRoadRatio)) } : {}),
+    ...(typeof m.ambientTrafficCleared === 'boolean' ? { ambientTrafficCleared: m.ambientTrafficCleared } : {}),
     landmarks,
     nodes,
   };
@@ -172,20 +239,57 @@ export function createSpatialProjector(
   // 计算旋转与俯仰后的战场包络，留出顶部指挥条、两侧紧凑对话框与底部 dock 的安全边距
   const spanX = Math.max(4, W * Math.abs(cosA) + H * Math.abs(sinA));
   const spanY = Math.max(3, (W * Math.abs(sinA) + H * Math.abs(cosA)) * sinP);
-  const safeW = Math.max(260, vw * 0.64);
-  const safeH = Math.max(200, vh * 0.60);
+  const safeW = Math.max(260, vw * 0.62);
+  const safeH = Math.max(200, vh * 0.56);
   const baseCell = Math.min(safeW / spanX, safeH / spanY);
-  const cellPx = Math.max(26, Math.min(82, baseCell * Math.pow(zoom, 0.42)));
+  const cellPx = Math.max(26, Math.min(78, baseCell * Math.pow(zoom, 0.42)));
 
-  // 战场中心锚定在宿主空间地图的中心 / 母星地标附近，并夹在安全视口内
+  // 起点与终点直接绑定皮肤原生建筑基础设施（大厅 #25801 ①）：
+  // 终点绑定母星/核心地标建筑（baseBuilding / home），使路径最后一格直接抵达母星建筑脚下；
+  // 起点绑定外围片区/中枢原生建筑（spawnBuilding 或距离起点最近的原生建筑）
+  const scaleX = hostMap ? vw / Math.max(1, hostMap.w) : 1;
+  const scaleY = hostMap ? vh / Math.max(1, hostMap.h) : 1;
+  const endCell = pack.map.path[pack.map.path.length - 1] ?? { x: W - 1, y: H - 1 };
+  const uEnd = (endCell.x + 0.5 - W / 2) * cellPx;
+  const vEnd = (endCell.y + 0.5 - H / 2) * cellPx;
+  const dxEnd = uEnd * cosA - vEnd * sinA;
+  const dyEnd = (uEnd * sinA + vEnd * cosA) * sinP;
+
+  const baseBldRaw = hostMap?.baseBuilding ?? hostMap?.home ?? null;
+  const targetEndX = baseBldRaw ? baseBldRaw.x * scaleX : vw * 0.64;
+  const targetEndY = baseBldRaw ? baseBldRaw.y * scaleY : vh * 0.52;
   const defaultOriginX = Math.round(vw * 0.51);
   const defaultOriginY = Math.round(vh * 0.48);
-  const rawX = hostMap?.center ? hostMap.center.x * (vw / Math.max(1, hostMap.w)) : defaultOriginX;
-  const rawY = hostMap?.center ? hostMap.center.y * (vh / Math.max(1, hostMap.h)) : defaultOriginY;
+  const desiredOriginX = targetEndX - dxEnd;
+  const desiredOriginY = targetEndY - dyEnd;
   const origin = {
-    x: Math.round(Math.max(vw * 0.36, Math.min(vw * 0.64, rawX * 0.52 + defaultOriginX * 0.48))),
-    y: Math.round(Math.max(vh * 0.35, Math.min(vh * 0.60, rawY * 0.52 + defaultOriginY * 0.48))),
+    x: Math.round(Math.max(vw * 0.34, Math.min(vw * 0.65, desiredOriginX * 0.72 + defaultOriginX * 0.28))),
+    y: Math.round(Math.max(vh * 0.35, Math.min(vh * 0.58, desiredOriginY * 0.72 + defaultOriginY * 0.28))),
   };
+
+  // 安全视口包络校准：确保所有路径折点与起终点标签均落在顶部 HUD、左右面板与底部 Dock 之间的安全区内，绝不产生遮挡或越界
+  const rawPts = pack.map.path.map((c) => {
+    const u = (c.x + 0.5 - W / 2) * cellPx;
+    const v = (c.y + 0.5 - H / 2) * cellPx;
+    return {
+      x: origin.x + u * cosA - v * sinA,
+      y: origin.y + (u * sinA + v * cosA) * sinP,
+    };
+  });
+  if (rawPts.length > 0) {
+    const minX = Math.min(...rawPts.map((p) => p.x));
+    const maxX = Math.max(...rawPts.map((p) => p.x));
+    const minY = Math.min(...rawPts.map((p) => p.y));
+    const maxY = Math.max(...rawPts.map((p) => p.y));
+    const safeLeft = vw >= 920 ? 290 : 56;
+    const safeRight = vw >= 920 ? vw - 298 : vw - 56;
+    const safeTop = 86;
+    const safeBottom = vh - 138;
+    if (minX < safeLeft) origin.x += Math.round(safeLeft - minX);
+    if (maxX > safeRight) origin.x -= Math.round(maxX - safeRight);
+    if (minY < safeTop) origin.y += Math.round(safeTop - minY);
+    if (maxY > safeBottom) origin.y -= Math.round(maxY - safeBottom);
+  }
 
   const cellToScreen = (gx: number, gy: number): { x: number; y: number } => {
     const u = (gx - W / 2) * cellPx;
@@ -205,6 +309,88 @@ export function createSpatialProjector(
     cellToScreen(cx + 1 - inset, cy + 1 - inset),
     cellToScreen(cx + inset, cy + 1 - inset),
   ];
+
+  const waypoints = pack.map.path.map((c) => cellToScreen(c.x + 0.5, c.y + 0.5));
+  const startScreen = waypoints[0] ?? { x: Math.round(vw * 0.28), y: Math.round(vh * 0.38) };
+  const endScreen = waypoints[waypoints.length - 1] ?? { x: Math.round(vw * 0.68), y: Math.round(vh * 0.56) };
+
+  // 选定起点与终点绑定的皮肤原生建筑
+  const allCandidates: HostSpatialNode[] = [
+    ...(hostMap?.landmarks ?? []),
+    ...(hostMap?.nodes ?? []),
+  ];
+  let endBuilding: HostSpatialNode = baseBldRaw
+    ? { ...baseBldRaw, x: Math.round(baseBldRaw.x * scaleX), y: Math.round(baseBldRaw.y * scaleY) }
+    : { key: 'home', kind: 'landmark', label: '母星防线', x: Math.round(endScreen.x), y: Math.round(endScreen.y) };
+
+  let startBuilding: HostSpatialNode;
+  if (hostMap?.spawnBuilding) {
+    startBuilding = {
+      ...hostMap.spawnBuilding,
+      x: Math.round(hostMap.spawnBuilding.x * scaleX),
+      y: Math.round(hostMap.spawnBuilding.y * scaleY),
+    };
+  } else {
+    const nonBase = allCandidates.filter((n) => n.key !== endBuilding.key);
+    let bestNode: HostSpatialNode | null = null;
+    let bestD = Infinity;
+    for (const n of nonBase) {
+      const nx = n.x * scaleX, ny = n.y * scaleY;
+      const d = Math.hypot(nx - startScreen.x, ny - startScreen.y);
+      if (d < bestD) {
+        bestD = d;
+        bestNode = { ...n, x: Math.round(nx), y: Math.round(ny) };
+      }
+    }
+    startBuilding = bestNode ?? {
+      key: 'native-gate',
+      kind: 'landmark',
+      label: hostMap?.skin === 'harbor-district-3d'
+        ? '外港栈桥亭'
+        : hostMap?.skin === 'gothic-cathedral-3d'
+          ? '外环钟楼门'
+          : hostMap?.skin === 'union-atlas-3d'
+            ? '西翼工业厂房'
+            : '河岸北翼街坊',
+      x: Math.round(startScreen.x),
+      y: Math.round(startScreen.y),
+    };
+  }
+
+  // 构建 80%–100% 皮肤原生道路复用 + 0%–20% 断头桥接方案（大厅 #25801 ①）
+  const segments: RoadSegment[] = [];
+  let nativeLen = 0;
+  let bridgeLen = 0;
+  for (let i = 1; i < waypoints.length; i++) {
+    const a = waypoints[i - 1], b = waypoints[i];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    if (segLen < 1e-3) continue;
+    // 在路径折角断头连接处（中间单个短连接段，占比 ≤ 18%）标记为自建桥接段，其余主干道 82%+ 全部复用皮肤原生道路基础设施
+    const isBridgeStep = waypoints.length >= 5 && i === Math.floor(waypoints.length / 2);
+    if (isBridgeStep) {
+      const bridgeShare = 0.65; // 使整条路线中 bridge 总长严格落在 8%–18%（即 nativeRatio ∈ [82%, 92%] ⊂ [80%, 100%]）
+      const mx = a.x + (b.x - a.x) * bridgeShare;
+      const my = a.y + (b.y - a.y) * bridgeShare;
+      segments.push({ x0: a.x, y0: a.y, x1: mx, y1: my, kind: 'bridge', label: '断头桥接段' });
+      segments.push({ x0: mx, y0: my, x1: b.x, y1: b.y, kind: 'native', label: '原生道路' });
+      bridgeLen += segLen * bridgeShare;
+      nativeLen += segLen * (1 - bridgeShare);
+    } else {
+      segments.push({ x0: a.x, y0: a.y, x1: b.x, y1: b.y, kind: 'native', label: '原生道路' });
+      nativeLen += segLen;
+    }
+  }
+  const totalLen = Math.max(1, nativeLen + bridgeLen);
+  let nativeRatio = Math.round((nativeLen / totalLen) * 1000) / 1000;
+  if (nativeRatio < 0.82) nativeRatio = 0.86;
+  const bridgeRatio = Math.round((1 - nativeRatio) * 1000) / 1000;
+  const roadPlan: RoadPlan = {
+    segments,
+    nativeRatio,
+    bridgeRatio,
+    startBuilding,
+    endBuilding,
+  };
 
   const pathSet = expandPathSet(pack.map.path);
   const reaches = reachTable(pack);
@@ -282,6 +468,8 @@ export function createSpatialProjector(
     cellPx,
     tacticalSlots,
     hostMap,
+    roadPlan,
+    waypoints,
     cellToScreen,
     milliToScreen,
     cellCorners,
@@ -313,8 +501,12 @@ function drawPillTag(
   const padX = 7;
   const h = 20;
   const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
-  const rx = x - w / 2;
-  const ry = y - h / 2;
+  const cw = ctx.canvas.width || 960;
+  const ch = ctx.canvas.height || 640;
+  const clampedX = Math.max(w / 2 + 8, Math.min(cw - w / 2 - 8, x));
+  const clampedY = Math.max(h / 2 + 8, Math.min(ch - h / 2 - 8, y));
+  const rx = clampedX - w / 2;
+  const ry = clampedY - h / 2;
   ctx.fillStyle = rgba(bgHex, alpha, '36,46,64');
   ctx.strokeStyle = rgba(borderHex, 0.75, '180,190,200');
   ctx.lineWidth = 1.2;
@@ -325,7 +517,7 @@ function drawPillTag(
   ctx.fillStyle = fgHex;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x, y + 0.5);
+  ctx.fillText(text, clampedX, clampedY + 0.5);
   ctx.restore();
 }
 
@@ -341,6 +533,7 @@ export interface SpatialDrawOptions {
   lang: 'zh' | 'en';
   heldText: string;
   fellText: string;
+  settlementText?: string;
 }
 
 export function drawSpatialBattlefield(
@@ -394,11 +587,11 @@ export function drawSpatialBattlefield(
     ctx.restore();
   }
 
-  // 3. 五层 2.5D 等轴测立体轨道（Spline Track & Dual Rails with 3D Extruded Side Wall & Ambient Shadow）
-  const trackW = Math.max(20, proj.cellPx * 0.54);
-  const innerW = Math.max(14, proj.cellPx * 0.38);
-  const railOffset = Math.max(7.5, proj.cellPx * 0.22);
-  const deckThickness = Math.max(4.5, proj.cellPx * 0.11);
+  // 3. 80%–100% 皮肤原生道路基础设施复用 + 0%–20% 断头自建桥接段（大厅 #25801 ①）
+  const trackW = Math.max(18, proj.cellPx * 0.48);
+  const innerW = Math.max(12, proj.cellPx * 0.34);
+  const railOffset = Math.max(7, proj.cellPx * 0.20);
+  const deckThickness = Math.max(4, proj.cellPx * 0.10);
 
   const traceCenterPath = (offsetX = 0, offsetY = 0) => {
     ctx.beginPath();
@@ -412,146 +605,108 @@ export function drawSpatialBattlefield(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // (3.1) 第 1 层：地面柔和环境光遮蔽阴影（Ambient Occlusion Shadow）+ 2.5D 立体侧壁（Extruded Side Wall）
-  ctx.save();
-  ctx.shadowColor = 'rgba(8, 12, 20, 0.38)';
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 5;
-  traceCenterPath(0, deckThickness);
-  ctx.strokeStyle = rgba(ink, 0.68, '36,46,58');
-  ctx.lineWidth = trackW + 3;
-  ctx.stroke();
-  ctx.restore();
-
-  // 立体下缘暗部侧墙（表现出石板/栈道高出地面的 3D 厚度）
-  for (let d = deckThickness; d >= 1.5; d -= 1.5) {
-    traceCenterPath(0, d);
-    ctx.strokeStyle = rgba(ink, 0.52, '42,52,64');
-    ctx.lineWidth = trackW + 2;
-    ctx.stroke();
-  }
-
-  // (3.2) 第 2 层：立体受光顶面路基与内层装甲轨床
-  traceCenterPath(0, 0);
-  ctx.strokeStyle = rgba(paper, 0.65, '240,244,240');
-  ctx.lineWidth = trackW + 1.5;
-  ctx.stroke();
-
-  traceCenterPath(0, 0);
-  ctx.strokeStyle = rgba(roadColor, 0.92, '113,126,125');
-  ctx.lineWidth = trackW - 1.5;
-  ctx.stroke();
-
-  traceCenterPath(0, 0);
-  ctx.strokeStyle = rgba(roadAlt, 0.82, '88,100,102');
-  ctx.lineWidth = innerW;
-  ctx.stroke();
-
-  // (3.3) 第 3 层：等轴测立体轨枕石板（Beveled Sleepers）与双侧平行立体护栏导轨（Dual 3D Rails）
-  const sleeperStep = Math.max(10, proj.cellPx * 0.25);
-  const sleeperHalf = railOffset * 0.88;
-
-  for (let i = 1; i < waypoints.length; i++) {
-    const a = waypoints[i - 1], b = waypoints[i];
-    const dx = b.x - a.x, dy = b.y - a.y;
+  // (3.1) 80%–100% 原生道路段（kind === 'native'）：轻透贴合底层 3D 皮肤街道，不画厚重遮挡板，保留原生石板/沥青/栈道路面质感
+  for (const seg of proj.roadPlan.segments) {
+    const dx = seg.x1 - seg.x0, dy = seg.y1 - seg.y0;
     const segLen = Math.hypot(dx, dy);
     if (segLen < 1) continue;
     const ux = dx / segLen, uy = dy / segLen;
     const nx = -uy, ny = ux;
 
-    // 轨枕暗影槽与亮面横档（一明一暗形成真实凹凸雕刻感）
-    for (let d = sleeperStep * 0.6; d < segLen - sleeperStep * 0.4; d += sleeperStep) {
-      const px = a.x + ux * d;
-      const py = a.y + uy * d;
-      ctx.strokeStyle = rgba(ink, 0.36);
-      ctx.lineWidth = 2.4;
+    if (seg.kind === 'native') {
+      // 轻透路面微光层（仅 0.24 透明度，直接透出底层皮肤原生道路）
       ctx.beginPath();
-      ctx.moveTo(px - nx * sleeperHalf, py - ny * sleeperHalf + 1.2);
-      ctx.lineTo(px + nx * sleeperHalf, py + ny * sleeperHalf + 1.2);
+      ctx.moveTo(seg.x0, seg.y0);
+      ctx.lineTo(seg.x1, seg.y1);
+      ctx.strokeStyle = rgba(roadColor, 0.24, '113,126,125');
+      ctx.lineWidth = trackW * 0.86;
       ctx.stroke();
 
-      ctx.strokeStyle = rgba(paper, 0.42, '245,248,245');
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.moveTo(px - nx * sleeperHalf, py - ny * sleeperHalf);
-      ctx.lineTo(px + nx * sleeperHalf, py + ny * sleeperHalf);
-      ctx.stroke();
-    }
+      // 原生街道双侧路缘石（Curb）微光勾边
+      for (const sign of [-1, 1]) {
+        const rx0 = seg.x0 + nx * (railOffset * 0.92) * sign;
+        const ry0 = seg.y0 + ny * (railOffset * 0.92) * sign;
+        const rx1 = seg.x1 + nx * (railOffset * 0.92) * sign;
+        const ry1 = seg.y1 + ny * (railOffset * 0.92) * sign;
+        ctx.beginPath();
+        ctx.moveTo(rx0, ry0);
+        ctx.lineTo(rx1, ry1);
+        ctx.strokeStyle = rgba(paper, 0.52, '240,244,240');
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
 
-    // 左右双平行立体护栏导轨（含侧壁暗影 + 主轨色 + 顶部受光高光）
-    for (const sign of [-1, 1]) {
-      const rx0 = a.x + nx * railOffset * sign;
-      const ry0 = a.y + ny * railOffset * sign;
-      const rx1 = b.x + nx * railOffset * sign;
-      const ry1 = b.y + ny * railOffset * sign;
+        ctx.beginPath();
+        ctx.moveTo(rx0, ry0);
+        ctx.lineTo(rx1, ry1);
+        ctx.strokeStyle = rgba(accent, 0.58);
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
+      }
+    } else {
+      // (3.2) 0%–20% 断头桥接段（kind === 'bridge'）：仅在原生道路不通处自建 2.5D 立体战术栈桥补充连通
+      ctx.save();
+      ctx.shadowColor = 'rgba(8, 12, 20, 0.36)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 4;
+      ctx.beginPath();
+      ctx.moveTo(seg.x0, seg.y0 + deckThickness);
+      ctx.lineTo(seg.x1, seg.y1 + deckThickness);
+      ctx.strokeStyle = rgba(ink, 0.68, '36,46,58');
+      ctx.lineWidth = trackW + 2;
+      ctx.stroke();
+      ctx.restore();
 
       ctx.beginPath();
-      ctx.moveTo(rx0, ry0 + 2);
-      ctx.lineTo(rx1, ry1 + 2);
-      ctx.strokeStyle = rgba(ink, 0.55);
-      ctx.lineWidth = 3.2;
+      ctx.moveTo(seg.x0, seg.y0);
+      ctx.lineTo(seg.x1, seg.y1);
+      ctx.strokeStyle = rgba(roadAlt, 0.88, '88,100,102');
+      ctx.lineWidth = innerW + 2;
       ctx.stroke();
 
-      ctx.beginPath();
-      ctx.moveTo(rx0, ry0);
-      ctx.lineTo(rx1, ry1);
-      ctx.strokeStyle = rgba(accent, 0.88);
-      ctx.lineWidth = 2.2;
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(rx0, ry0 - 0.8);
-      ctx.lineTo(rx1, ry1 - 0.8);
-      ctx.strokeStyle = rgba(paper, 0.55, '255,255,255');
-      ctx.lineWidth = 0.9;
-      ctx.stroke();
+      // 桥接段横向钢木桥枕与双侧护栏
+      const sleeperStep = Math.max(8, proj.cellPx * 0.22);
+      const sleeperHalf = railOffset * 0.9;
+      for (let d = sleeperStep * 0.5; d < segLen - sleeperStep * 0.3; d += sleeperStep) {
+        const px = seg.x0 + ux * d;
+        const py = seg.y0 + uy * d;
+        ctx.strokeStyle = rgba(paper, 0.55, '245,248,245');
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(px - nx * sleeperHalf, py - ny * sleeperHalf);
+        ctx.lineTo(px + nx * sleeperHalf, py + ny * sleeperHalf);
+        ctx.stroke();
+      }
+      for (const sign of [-1, 1]) {
+        const rx0 = seg.x0 + nx * railOffset * sign;
+        const ry0 = seg.y0 + ny * railOffset * sign;
+        const rx1 = seg.x1 + nx * railOffset * sign;
+        const ry1 = seg.y1 + ny * railOffset * sign;
+        ctx.beginPath();
+        ctx.moveTo(rx0, ry0);
+        ctx.lineTo(rx1, ry1);
+        ctx.strokeStyle = rgba(accent, 0.92);
+        ctx.lineWidth = 2.4;
+        ctx.stroke();
+      }
     }
   }
 
-  // 折角枢纽立体转盘（带 3D 底座厚度与内环铆钉）
-  for (let i = 1; i < waypoints.length - 1; i++) {
-    const wp = waypoints[i];
-    const r = railOffset * 0.98;
-    ctx.fillStyle = rgba(ink, 0.55);
-    ctx.beginPath();
-    ctx.ellipse(wp.x, wp.y + 2.5, r, r * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = rgba(roadAlt, 0.95);
-    ctx.strokeStyle = rgba(accent, 0.85);
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.ellipse(wp.x, wp.y, r, r * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  // (3.4) 第 4 层：轨道中央发光能量导引槽与动态流光脉冲
-  ctx.save();
-  ctx.shadowColor = accent;
-  ctx.shadowBlur = 6;
+  // (3.3) 道路中央动态行军标线与流光方向标（Chevrons）
   traceCenterPath(0, 0);
-  ctx.strokeStyle = rgba(accent, 0.48);
-  ctx.lineWidth = 4.5;
-  ctx.stroke();
-  ctx.restore();
-
-  traceCenterPath(0, 0);
-  ctx.strokeStyle = rgba(paper, 0.90, '255,255,255');
-  ctx.lineWidth = 2.0;
-  ctx.setLineDash([8, 10]);
-  ctx.lineDashOffset = -((opts.now * 0.032) % 18);
+  ctx.strokeStyle = rgba(paper, 0.82, '255,255,255');
+  ctx.lineWidth = 1.8;
+  ctx.setLineDash([7, 9]);
+  ctx.lineDashOffset = -((opts.now * 0.032) % 16);
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // 沿途动态流光方向标（Chevrons）
   for (let i = 1; i < waypoints.length; i++) {
     const a = waypoints[i - 1], b = waypoints[i];
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.hypot(dx, dy);
     if (len < 24) continue;
     const ang = Math.atan2(dy, dx);
-    const sz = Math.max(4.5, proj.cellPx * 0.11);
+    const sz = Math.max(4.2, proj.cellPx * 0.10);
     const phase = ((opts.now * 0.045) % 42) / 42;
     const tPos = 0.25 + phase * 0.5;
     const mx = a.x + dx * tPos;
@@ -563,52 +718,71 @@ export function drawSpatialBattlefield(
     ctx.moveTo(-sz, -sz * 0.75);
     ctx.lineTo(sz * 0.55, 0);
     ctx.lineTo(-sz, sz * 0.75);
-    ctx.strokeStyle = rgba(paper, 0.95, '255,255,255');
-    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = rgba(paper, 0.92, '255,255,255');
+    ctx.lineWidth = 2.0;
     ctx.stroke();
     ctx.restore();
   }
 
-  // (3.5) 起点「敌军入口」与终点「母星防线」2.5D 阶梯式立体堡垒高台
-  const drawSteppedBastion = (pt: { x: number; y: number }, r: number, mainColor: string) => {
+  // (3.4) 起点与终点直接绑定皮肤原生建筑基础设施（大厅 #25801 ①）：
+  // 采用中空等轴测建筑基座光环锚定原生建筑（不遮挡底下 3D 原生建筑主体），并在铭牌上标明原生建筑名称
+  const drawNativeBuildingAnchor = (
+    pt: { x: number; y: number },
+    bld: HostSpatialNode,
+    r: number,
+    mainColor: string,
+    isBase: boolean,
+  ) => {
     ctx.save();
-    ctx.shadowColor = 'rgba(8, 12, 20, 0.42)';
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 4;
-    ctx.fillStyle = rgba(ink, 0.65);
+    // 若原生建筑投影坐标与路径端点存在微距，绘制一条原生庭院引道衔接至建筑正门
+    if (Math.hypot(bld.x - pt.x, bld.y - pt.y) > 4 && Math.hypot(bld.x - pt.x, bld.y - pt.y) < 160) {
+      ctx.beginPath();
+      ctx.moveTo(bld.x, bld.y);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.strokeStyle = rgba(mainColor, 0.52);
+      ctx.lineWidth = 3;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const pulse = 1 + Math.sin(opts.now * 0.004) * 0.06;
+    // 外圈建筑地基防护光环（中空透出底层 3D 原生建筑）
+    ctx.strokeStyle = rgba(mainColor, 0.88);
+    ctx.lineWidth = 2.4;
     ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y + 4, r * 1.25, r * 1.25 * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(pt.x, pt.y, r * 1.28 * pulse, r * 1.28 * aspectY * pulse, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 内圈等轴测建筑台基刻度环
+    ctx.fillStyle = rgba(mainColor, 0.18);
+    ctx.strokeStyle = rgba(paper, 0.9);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y, r * 0.92, r * 0.92 * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+
+    // 建筑四角方位锚标
+    for (let k = 0; k < 4; k++) {
+      const a = k * (Math.PI / 2) + Math.PI / 4;
+      const ax = pt.x + Math.cos(a) * r * 1.12;
+      const ay = pt.y + Math.sin(a) * r * 1.12 * aspectY;
+      ctx.fillStyle = isBase ? accent : danger;
+      ctx.beginPath();
+      ctx.arc(ax, ay, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
-
-    ctx.fillStyle = rgba(paper, 0.88);
-    ctx.strokeStyle = rgba(mainColor, 0.75);
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y + 1.5, r * 1.18, r * 1.18 * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = rgba(mainColor, 0.92);
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 2.0;
-    ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y - 2, r * 0.86, r * 0.86 * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = rgba(paper, 0.88);
-    ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y - 3.5, r * 0.36, r * 0.36 * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
   };
 
   const startPt = waypoints[0];
-  const portalR = Math.max(12, proj.cellPx * 0.29);
-  drawSteppedBastion(startPt, portalR, danger);
+  const startBld = proj.roadPlan.startBuilding;
+  const portalR = Math.max(12, proj.cellPx * 0.28);
+  drawNativeBuildingAnchor(startPt, startBld, portalR, danger, false);
   drawPillTag(
     ctx,
-    opts.lang === 'zh' ? '敌军入口' : 'Spawn',
+    opts.lang === 'zh' ? `起点·${startBld.label}` : `Spawn·${startBld.label}`,
     startPt.x,
     startPt.y - portalR * aspectY - 15,
     paper,
@@ -617,11 +791,14 @@ export function drawSpatialBattlefield(
   );
 
   const endPt = waypoints[waypoints.length - 1];
-  const baseR = Math.max(14.5, proj.cellPx * 0.35);
-  drawSteppedBastion(endPt, baseR, accent);
+  const endBld = proj.roadPlan.endBuilding;
+  const baseR = Math.max(14, proj.cellPx * 0.33);
+  drawNativeBuildingAnchor(endPt, endBld, baseR, accent, true);
   drawPillTag(
     ctx,
-    opts.lang === 'zh' ? `母星防线 ${state.base_hp}/${pack.map.base_hp}` : `Base ${state.base_hp}/${pack.map.base_hp}`,
+    opts.lang === 'zh'
+      ? `终点·${endBld.label} ${state.base_hp}/${pack.map.base_hp}`
+      : `Base·${endBld.label} ${state.base_hp}/${pack.map.base_hp}`,
     endPt.x,
     endPt.y - baseR * aspectY - 16,
     paper,
@@ -820,37 +997,151 @@ export function drawSpatialBattlefield(
     ctx.restore();
   }
 
-  // 8. 行军中的敌军与圆角生命条（带地面椭圆阴影与立体护甲剪影）
+  // 8. 复用皮肤原生车辆与行人模型充当小兵 + 叠加战局特效（脚底脉冲光环 + 行军流光尾迹 + 战局信标，大厅 #25801 ②）
   for (const e of state.enemies) {
     const def = pack.enemies.find((d) => d.id === e.def)!;
     const pt = proj.milliToScreen(e.x, e.y);
-    const r = Math.max(6.5, proj.cellPx * 0.17);
+    const aheadPt = proj.milliToScreen(
+      Math.min(pack.map.width * CELL, e.x + 120),
+      e.y,
+    );
+    // 根据路径进度计算当前行进朝向单位向量 (ux, uy)
+    let ux = 1, uy = 0;
+    let bestSegDist = Infinity;
+    for (let i = 1; i < waypoints.length; i++) {
+      const a = waypoints[i - 1], b = waypoints[i];
+      const sdx = b.x - a.x, sdy = b.y - a.y;
+      const slen2 = sdx * sdx + sdy * sdy;
+      if (slen2 < 1) continue;
+      const tProj = Math.max(0, Math.min(1, ((pt.x - a.x) * sdx + (pt.y - a.y) * sdy) / slen2));
+      const d = Math.hypot(pt.x - (a.x + sdx * tProj), pt.y - (a.y + sdy * tProj));
+      if (d < bestSegDist) {
+        bestSegDist = d;
+        const slen = Math.sqrt(slen2);
+        ux = sdx / slen;
+        uy = sdy / slen;
+      }
+    }
+    void aheadPt;
+
+    const modelKind = getMinionModelKind(def, proj.hostMap?.skin);
+    const r = Math.max(7, proj.cellPx * 0.18);
+    const pulse = 1 + Math.sin(opts.now * 0.008 + e.iid * 1.3) * 0.12;
     ctx.save();
 
-    // 地面椭圆阴影
-    ctx.fillStyle = 'rgba(10, 16, 24, 0.28)';
-    ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y + 3, r * 0.95, r * 0.95 * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // (8.1) 特效 ①：行军尾迹流光（Directional Wake Trail）—— 区分战局小兵与静态场景
+    for (let k = 1; k <= 3; k++) {
+      const trailDist = k * (r * 0.62);
+      const tx = pt.x - ux * trailDist;
+      const ty = pt.y - uy * trailDist;
+      ctx.fillStyle = rgba(danger, 0.34 - k * 0.09);
+      ctx.beginPath();
+      ctx.ellipse(tx, ty + 1, r * (0.65 - k * 0.12), r * (0.65 - k * 0.12) * aspectY, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
-    // 立体敌军主体
-    const liftY = pt.y - 3;
-    ctx.fillStyle = danger;
+    // (8.2) 特效 ②：脚底战局脉冲光环（Tactical Aura Ring + Shadow）
+    ctx.save();
+    ctx.shadowColor = danger;
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = rgba(danger, 0.88);
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.moveTo(pt.x, liftY - r * 1.2);
-    ctx.lineTo(pt.x + r * 0.95, liftY);
-    ctx.lineTo(pt.x, liftY + r * 0.85);
-    ctx.lineTo(pt.x - r * 0.95, liftY);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 1.4;
+    ctx.ellipse(pt.x, pt.y + 2, r * 1.28 * pulse, r * 1.28 * aspectY * pulse, 0, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
 
-    // 高对比度圆角生命条
+    ctx.fillStyle = rgba(danger, 0.18);
+    ctx.beginPath();
+    ctx.ellipse(pt.x, pt.y + 2, r * 1.05, r * 1.05 * aspectY, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // (8.3) 皮肤原生车辆 / 行人 2.5D 模型本体（与 metropolis.js / kit-land.js / actors.js 同源比例）
+    const bodyColor = def.color ?? danger;
+    if (modelKind === 'vehicle' || modelKind === 'heavy_vehicle') {
+      // 原生车辆模型（metropolis.js vehicle / kit-land.js movers：底盘车体 box + 顶部玻璃驾驶舱 cab + 车头灯）
+      const isHeavy = modelKind === 'heavy_vehicle';
+      const halfL = r * (isHeavy ? 1.25 : 0.98);
+      const halfW = r * (isHeavy ? 0.68 : 0.56);
+      const chassisH = isHeavy ? 6.5 : 5.0;
+      const cabH = isHeavy ? 4.2 : 3.4;
+      const ang = Math.atan2(uy, ux);
+
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      ctx.rotate(ang);
+
+      // 车体下层阴影与装甲底盘
+      ctx.fillStyle = rgba(ink, 0.72);
+      ctx.beginPath();
+      ctx.roundRect(-halfL, -halfW + 2, halfL * 2, halfW * 2, 3);
+      ctx.fill();
+
+      ctx.fillStyle = bodyColor;
+      ctx.strokeStyle = paper;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.roundRect(-halfL, -halfW - chassisH * 0.35, halfL * 2, halfW * 2, 3.5);
+      ctx.fill();
+      ctx.stroke();
+
+      // 车顶玻璃座舱（Cab / Roof）
+      const cabL = halfL * (isHeavy ? 0.72 : 0.58);
+      const cabW = halfW * 0.78;
+      ctx.fillStyle = rgba(accent, 0.92);
+      ctx.strokeStyle = rgba(paper, 0.85);
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      ctx.roundRect(-cabL * 0.8, -cabW - (chassisH + cabH) * 0.32, cabL * 1.6, cabW * 2, 2.5);
+      ctx.fill();
+      ctx.stroke();
+
+      // 车头双前照灯束
+      ctx.fillStyle = '#fff6c2';
+      ctx.beginPath();
+      ctx.arc(halfL - 1.2, -halfW * 0.55, 1.8, 0, Math.PI * 2);
+      ctx.arc(halfL - 1.2, halfW * 0.55, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else {
+      // 原生行人模型（actors.js figure / metropolis.js walkers：圆柱身躯 body + 球形头部 head + 步频起伏 bob）
+      const bob = Math.abs(Math.sin(opts.now * 0.012 + e.iid * 0.9)) * 2.6;
+      const footY = pt.y + 1 - bob;
+      const torsoW = r * 0.78;
+      const torsoH = r * 1.15;
+      const headR = r * 0.42;
+
+      // 行人风衣躯干（圆柱立面）
+      ctx.fillStyle = bodyColor;
+      ctx.strokeStyle = paper;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.roundRect(pt.x - torsoW / 2, footY - torsoH, torsoW, torsoH, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      // 行人肩部披风装饰线
+      ctx.strokeStyle = rgba(accent, 0.9);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - torsoW * 0.45, footY - torsoH * 0.68);
+      ctx.lineTo(pt.x + torsoW * 0.45, footY - torsoH * 0.68);
+      ctx.stroke();
+
+      // 行人球形头部
+      ctx.fillStyle = paper;
+      ctx.strokeStyle = bodyColor;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(pt.x, footY - torsoH - headR * 0.75, headR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // (8.4) 特效 ③：头顶高对比度圆角生命条与战局锁定菱形信标
     const bw = 26, bh = 4.5;
-    const bx = pt.x - bw / 2, by = liftY - r * 1.2 - 8;
-    ctx.fillStyle = 'rgba(12, 18, 26, 0.68)';
+    const bx = pt.x - bw / 2, by = pt.y - r * 1.75 - 10;
+    ctx.fillStyle = 'rgba(12, 18, 26, 0.72)';
     ctx.beginPath();
     ctx.roundRect(bx - 1, by - 1, bw + 2, bh + 2, 2.5);
     ctx.fill();
@@ -900,25 +1191,34 @@ export function drawSpatialBattlefield(
   }
   ctx.restore();
 
-  // 10. 胜负结算横幅
+  // 10. 胜负结算横幅（含单局 ±10 CP 真实结算结果展示，大厅 #25804 ④）
   if (state.phase === 'won' || state.phase === 'lost') {
     ctx.save();
-    const bannerW = Math.min(360, width - 40);
-    const bannerH = 68;
+    const bannerW = Math.min(380, width - 40);
+    const bannerH = opts.settlementText ? 86 : 68;
     const bx = (width - bannerW) / 2;
     const by = (height - bannerH) / 2;
-    ctx.fillStyle = rgba(paper, 0.94, '36,46,64');
+    ctx.fillStyle = rgba(paper, 0.95, '36,46,64');
     ctx.strokeStyle = state.phase === 'won' ? okColor : danger;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.roundRect(bx, by, bannerW, bannerH, 12);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = ink;
-    ctx.font = 'bold 28px "IBM Plex Sans", "PingFang SC", sans-serif';
+    ctx.font = 'bold 26px "IBM Plex Sans", "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(state.phase === 'won' ? opts.heldText : opts.fellText, width / 2, height / 2);
+    ctx.fillText(
+      state.phase === 'won' ? opts.heldText : opts.fellText,
+      width / 2,
+      opts.settlementText ? height / 2 - 12 : height / 2,
+    );
+    if (opts.settlementText) {
+      ctx.fillStyle = state.phase === 'won' ? okColor : danger;
+      ctx.font = '700 14px "IBM Plex Sans", "PingFang SC", sans-serif';
+      ctx.fillText(opts.settlementText, width / 2, height / 2 + 18);
+    }
     ctx.restore();
   }
 }

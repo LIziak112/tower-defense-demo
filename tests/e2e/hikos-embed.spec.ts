@@ -81,7 +81,8 @@ test('嵌入：hikos:visibility=false 冻结模拟并报 paused，true 后恢复
 
   // 运行中切语言 / 皮肤：HUD 文案与配色跟着换（允许下一局生效的是精灵集，配色与文案即时）
   await page.evaluate(() => (window as any).__send({ type: 'hikos:context', v: 1, skin: 'gothic-cathedral-3d', accent: 'e4c596', bg: '182333', ink: 'e6e1da', theme: 'night', lang: 'en' }));
-  await expect(game.locator('#hud')).toContainText('Gold');
+  await expect(game.locator('#hud')).toContainText('CP');
+  await expect(game.locator('#hud')).toContainText('Base');
   await expect.poll(() => game.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--td-accent').trim())).toBe('#e4c596');
   expect(await game.evaluate(() => document.documentElement.dataset.theme)).toBe('night');
   await page.screenshot({ path: 'docs/screens/hikos-embed-gothic-en.png' });
@@ -107,4 +108,151 @@ test('独立打开（不在 iframe 里）：不发消息、保留主题下拉、
   expect(host.palette).toBe('neon');
   await expect(page.locator('#theme-select')).toHaveCount(1);
   await expect(page.locator('#td-exit')).toHaveCount(0);
+});
+
+test('大厅 #25801：四款皮肤原生道路80%-100%/起终点原生建筑/车人小兵与清空闲散车流/全界面无溢出遮挡/去金币统一CP胜+10败-10真实结算', async ({ page }) => {
+  const settleHostHtml = `<!DOCTYPE html><html><body style="margin:0">
+<div id="stage" style="width:1440px;height:856px"><iframe id="game" sandbox="allow-scripts" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0"></iframe></div>
+<script>
+  const frame = document.getElementById('game');
+  window.__msgs = [];
+  window.__wallet = { balanceCp: 1000, netCp: 0, wonCount: 0, lostCount: 0, settled: {} };
+  window.__send = (m) => frame.contentWindow.postMessage(m, '*');
+  addEventListener('message', (e) => {
+    if (e.source !== frame.contentWindow) return;
+    const m = e.data;
+    window.__msgs.push(m);
+    if (m && m.type === 'td:ready') {
+      window.__send({
+        type: 'hikos:context', v: 1, skin: 'union-atlas-3d',
+        name: { zh: '共和国 · 工业沙盘', en: 'Union Industrial Atlas' },
+        accent: 'a72e25', bg: 'f2ebdd', ink: '393e38', theme: 'day', lang: 'zh',
+        reducedMotion: false, insitu: true,
+        wallet: { balanceCp: window.__wallet.balanceCp, netCp: 0, wonCount: 0, lostCount: 0 },
+        map: {
+          skin: 'union-atlas-3d', layout: 'river-grid', w: 1440, h: 856,
+          azimuth: -0.38, pitch: 0.78, zoom: 1.0,
+          center: { x: 748, y: 410 },
+          home: { key: 'home', kind: 'landmark', label: '中央工业母星', x: 860, y: 460 },
+          spawnBuilding: { key: 'channel:mother:west', kind: 'entity', label: '西翼工业厂房', x: 420, y: 290 },
+          baseBuilding: { key: 'home', kind: 'landmark', label: '中央工业母星', x: 860, y: 460 },
+          ambientTrafficCleared: true,
+          landmarks: [{ key: 'home', kind: 'landmark', label: '中央工业母星', x: 860, y: 460 }],
+          nodes: [{ key: 'channel:mother:west', kind: 'entity', label: '西翼工业厂房', x: 420, y: 290 }],
+        },
+      });
+    } else if (m && m.type === 'td:settle:request') {
+      const id = String(m.matchId || '');
+      const outcome = m.outcome === 'lost' ? 'lost' : 'won';
+      const deltaCp = outcome === 'won' ? 10 : -10;
+      if (window.__wallet.settled[id]) {
+        const prev = window.__wallet.settled[id];
+        window.__send({ ...prev, idempotent: true, appliedCp: 0 });
+      } else {
+        window.__wallet.balanceCp = Math.max(0, window.__wallet.balanceCp + deltaCp);
+        window.__wallet.netCp += deltaCp;
+        if (outcome === 'won') window.__wallet.wonCount++; else window.__wallet.lostCount++;
+        const rep = {
+          type: 'hikos:settle:reply', v: 1, matchId: id, ok: true,
+          outcome, deltaCp, appliedCp: deltaCp,
+          balanceCp: window.__wallet.balanceCp,
+          netCp: window.__wallet.netCp,
+          wonCount: window.__wallet.wonCount,
+          lostCount: window.__wallet.lostCount,
+          idempotent: false,
+        };
+        window.__wallet.settled[id] = rep;
+        window.__send(rep);
+      }
+    }
+  });
+  frame.src = './?v=1&skin=union-atlas-3d&accent=a72e25&bg=f2ebdd&ink=393e38&theme=day&lang=zh&debug=1';
+</script></body></html>`;
+
+  await page.setViewportSize({ width: 1440, height: 856 });
+  await page.route('**/__settle-host.html', (route) => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: settleHostHtml }));
+  await page.goto('/__settle-host.html');
+  const el = await page.waitForSelector('#game');
+  const game = (await el.contentFrame())!;
+  await game.waitForSelector('#board', { state: 'visible' });
+
+  const skins = [
+    { skin: 'union-atlas-3d', layout: 'river-grid', accent: 'a72e25', bg: 'f2ebdd', ink: '393e38', theme: 'day', spawnLabel: '西翼工业厂房', baseLabel: '中央工业母星' },
+    { skin: 'metropolis-riverside-3d', layout: 'district-grid', accent: '356d73', bg: 'e8ede7', ink: '354e52', theme: 'day', spawnLabel: '河岸北翼街坊', baseLabel: '河岸中枢大厦' },
+    { skin: 'gothic-cathedral-3d', layout: 'concentric-town', accent: 'e4c596', bg: '182333', ink: 'e6e1da', theme: 'night', spawnLabel: '外环钟楼门', baseLabel: '圣堂主座' },
+    { skin: 'harbor-district-3d', layout: 'quays', accent: '256e7c', bg: 'e0e9e7', ink: '254452', theme: 'day', spawnLabel: '外港栈桥亭', baseLabel: '海事总署灯塔' },
+  ];
+
+  for (const sk of skins) {
+    await page.evaluate((s) => (window as any).__send({
+      type: 'hikos:context', v: 1, skin: s.skin, accent: s.accent, bg: s.bg, ink: s.ink, theme: s.theme, lang: 'zh',
+      insitu: true,
+      map: {
+        skin: s.skin, layout: s.layout, w: 1440, h: 856,
+        azimuth: s.skin === 'gothic-cathedral-3d' ? -2.55 : -0.38, pitch: 0.78, zoom: 1.0,
+        center: { x: 748, y: 410 },
+        home: { key: 'home', kind: 'landmark', label: s.baseLabel, x: 860, y: 460 },
+        spawnBuilding: { key: 'channel:mother:spawn', kind: 'entity', label: s.spawnLabel, x: 420, y: 290 },
+        baseBuilding: { key: 'home', kind: 'landmark', label: s.baseLabel, x: 860, y: 460 },
+        ambientTrafficCleared: true,
+        landmarks: [{ key: 'home', kind: 'landmark', label: s.baseLabel, x: 860, y: 460 }],
+        nodes: [{ key: 'channel:mother:spawn', kind: 'entity', label: s.spawnLabel, x: 420, y: 290 }],
+      },
+    }), sk);
+
+    await expect.poll(() => game.evaluate(() => (window as any).__td.spatial?.roadPlan?.endBuilding?.label)).toBe(sk.baseLabel);
+    const sp = await game.evaluate(() => {
+      const s = (window as any).__td.spatial;
+      const hud = document.getElementById('hud')!.getBoundingClientRect();
+      const adv = document.getElementById('advisor')!.getBoundingClientRect();
+      const lob = document.getElementById('lobby')!.getBoundingClientRect();
+      return {
+        nativeRatio: s.roadPlan.nativeRatio,
+        bridgeRatio: s.roadPlan.bridgeRatio,
+        startLabel: s.roadPlan.startBuilding.label,
+        endLabel: s.roadPlan.endBuilding.label,
+        ambientTrafficCleared: s.ambientTrafficCleared,
+        enemyModels: s.enemyModels,
+        hudRect: { top: hud.top, bottom: hud.bottom, left: hud.left, right: hud.right },
+        advRect: { top: adv.top, bottom: adv.bottom, left: adv.left, right: adv.right },
+        lobRect: { top: lob.top, bottom: lob.bottom, left: lob.left, right: lob.right },
+        bodyText: document.body.innerText,
+      };
+    });
+    expect(sp.nativeRatio).toBeGreaterThanOrEqual(0.8);
+    expect(sp.nativeRatio).toBeLessThanOrEqual(1.0);
+    expect(sp.bridgeRatio).toBeLessThanOrEqual(0.2);
+    expect(sp.startLabel).toBe(sk.spawnLabel);
+    expect(sp.endLabel).toBe(sk.baseLabel);
+    expect(sp.ambientTrafficCleared).toBe(true);
+    expect(sp.enemyModels.length).toBeGreaterThanOrEqual(1);
+    expect(sp.enemyModels[0].vfx).toEqual(['auraRing', 'wakeTrail', 'battleCrest']);
+    expect(sp.bodyText).not.toContain('金币');
+    expect(sp.bodyText).toContain('CP');
+    // 左右面板互不重叠、均在顶部 HUD 之下
+    expect(sp.advRect.top).toBeGreaterThanOrEqual(sp.hudRect.bottom - 1);
+    expect(sp.advRect.right).toBeLessThan(sp.lobRect.left);
+  }
+
+  // 验证胜利 +10 CP 与失败 -10 CP 真实结算及同局幂等防重
+  await game.evaluate(() => (window as any).__td.settleNow('won'));
+  await expect.poll(() => game.evaluate(() => (window as any).__td.cp.lastSettlement?.status)).toBe('settled');
+  const winCp = await game.evaluate(() => (window as any).__td.cp);
+  expect(winCp.lastSettlement).toMatchObject({ outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 1010, status: 'settled' });
+  await expect(game.locator('#td-cp-settlement')).toContainText('结算 +10 CP · 账户 1010 CP');
+
+  // 同一 matchId 重复请求宿主结算：宿主返回 idempotent: true, balanceCp 保持 1010 不重复加分
+  const winMatchId = winCp.lastSettlement.matchId;
+  await game.evaluate((mid) => window.parent.postMessage({ type: 'td:settle:request', v: 1, matchId: mid, outcome: 'won', deltaCp: 10 }, '*'), winMatchId);
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => (window as any).__wallet.balanceCp)).toBe(1010);
+
+  // 重开一局并触发失败 -10 CP 结算：账户从 1010 CP 扣减为 1000 CP
+  await game.click('#start-wave'); // restart
+  await game.click('#td-direct-play');
+  await game.evaluate(() => (window as any).__td.settleNow('lost'));
+  await expect.poll(() => game.evaluate(() => (window as any).__td.cp.lastSettlement?.status)).toBe('settled');
+  const lossCp = await game.evaluate(() => (window as any).__td.cp);
+  expect(lossCp.lastSettlement).toMatchObject({ outcome: 'lost', deltaCp: -10, appliedCp: -10, balanceCp: 1000, status: 'settled' });
+  await expect(game.locator('#td-cp-settlement')).toContainText('结算 -10 CP · 账户 1000 CP');
 });

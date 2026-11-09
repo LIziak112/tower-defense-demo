@@ -11,12 +11,12 @@ import { runPipeline, runPipelineAsync, type LevelStreamProgress, type Summary }
 import { LlmContentProvider } from '../ai/llm';
 import type { ContentPack } from '../runtime/index';
 import { expandPath } from '../content/validate';
-import { createHostBridge, type GameState, type HostContext } from './hikos';
+import { createHostBridge, type GameState, type HostContext, type HostSettlementReply } from './hikos';
 import { paletteForContext } from './skins';
 import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type AdvisorView } from '../advisor/index';
 import { slotCell } from '../advisor/snapshot';
 import { renderAdvisorCard, drawAdvisorOverlay } from './advisorCard';
-import { createSpatialProjector, drawSpatialBattlefield, type SpatialProjector } from './spatialMap';
+import { createSpatialProjector, drawSpatialBattlefield, getMinionModelKind, type SpatialProjector } from './spatialMap';
 import { cleanTechTerms, escHtml, extractNaturalAdvisorSpeech } from './chatFormat';
 
 const params = new URLSearchParams(location.search);
@@ -34,6 +34,7 @@ const legacyPalette = [params.get('palette'), params.get('theme')].find((k) => k
 const hostLog: Record<string, unknown>[] = [];
 const advisorReplyCbs: ((m: Record<string, unknown>) => void)[] = [];
 const advisorStreamCbs: ((m: Record<string, unknown>) => void)[] = [];
+const settleReplyCbs: ((m: HostSettlementReply) => void)[] = [];
 const explicitInsitu = params.get('insitu');
 const bridge = createHostBridge(window, {
   onContext: applyContext,
@@ -42,6 +43,7 @@ const bridge = createHostBridge(window, {
   onSize: () => { syncProjector(); fit(); },
   onAdvisorReply: (m) => { for (const cb of advisorReplyCbs) cb(m); },
   onAdvisorStream: (m) => { for (const cb of advisorStreamCbs) cb(m); },
+  onSettleReply: (m) => { onHostSettleReply(m); for (const cb of settleReplyCbs) cb(m); },
   onAny: (m) => { if (DEBUG) hostLog.push(m); },
 });
 if (DEBUG) { (window as any).__q = Object.fromEntries(params); (window as any).__msgs = hostLog; }
@@ -53,12 +55,27 @@ let currentTheme = legacyPalette ?? (hikosMode ? 'hikos' : 'default');
 let theme: Palette = legacyPalette ? PALETTES[legacyPalette] : hikosMode ? paletteForContext(bridge.context) : PALETTES.default;
 let lang = bridge.context.lang;
 
-// 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切
+// 一次只显示一种语言（宿主规则）：HUD / 结算 / 按钮按 lang 切；彻底去除“金币”概念，统一使用 CP（大厅 #25804 ④）
 const STR = {
-  zh: { base: '基地', gold: '金币', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…' },
-  en: { base: 'Base', gold: 'Gold', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…' },
+  zh: { base: '基地', gold: 'CP', wave: '波次', build: '布防中', fight: '交战中', won: '胜利', lost: '失败', start: '出兵', restart: '重新开始', exit: '退出', theme: '主题:', held: '守住了！', fell: '基地失守', paused: '已暂停', revenge: '复仇一局', revenging: '军师出题中…', wallet: '账户' },
+  en: { base: 'Base', gold: 'CP', wave: 'Wave', build: 'Build', fight: 'Fighting', won: 'Won', lost: 'Lost', start: 'Start wave', restart: 'Restart', exit: 'Exit', theme: 'Theme:', held: 'Held!', fell: 'Base fell', paused: 'Paused', revenge: 'Revenge round', revenging: 'Advisor is designing…', wallet: 'Wallet' },
 } as const;
 const t = (k: keyof typeof STR.zh) => STR[lang][k];
+
+// 单局 CP 结算量级（大厅 #25804 ④：胜利 +10 CP，失败 -10 CP）
+export const MATCH_WIN_CP = 10;
+export const MATCH_LOSS_CP = -10;
+let matchSeq = 1;
+let settledMatchSeq = 0;
+let localWalletCp = 1000;
+let lastSettlement: {
+  matchId: string;
+  outcome: 'won' | 'lost';
+  deltaCp: number;
+  appliedCp: number;
+  balanceCp: number;
+  status: 'pending' | 'settled';
+} | null = null;
 
 // ---- 军师通道与会话：嵌入缺省走宿主代理，独立缺省走本地模板，?advisor= 可切；凭据与端点永远不在这里
 let hostChannel: HostChannel | null = null;
@@ -166,6 +183,9 @@ function applyContext(c: HostContext) {
   hostChannel?.setAgent(agent);
   session.setAgent(agent);
   llmLevelProvider?.setAgent(agent);
+  if (c.wallet && typeof c.wallet.balanceCp === 'number' && Number.isFinite(c.wallet.balanceCp)) {
+    localWalletCp = Math.round(c.wallet.balanceCp);
+  }
   // 宿主 context 一到就定军师可用性：没配（enabled:false）或老宿主（没有 advisor 字段）→ 不白等截止，秒切本地；排队中的请求随之放行 / 作废
   hostChannel?.setAvailable(c.advisor?.enabled === true);
   if (!legacyPalette) { theme = paletteForContext(c); currentTheme = 'hikos'; }
@@ -174,6 +194,53 @@ function applyContext(c: HostContext) {
   if (inLobby) refreshLobbyIdentity();
   renderHud();
   scheduleCard();
+}
+
+function onHostSettleReply(sr: HostSettlementReply) {
+  if (typeof sr.balanceCp === 'number' && Number.isFinite(sr.balanceCp)) {
+    localWalletCp = Math.round(sr.balanceCp);
+  }
+  lastSettlement = {
+    matchId: sr.matchId || lastSettlement?.matchId || `td-${state.seed}-${matchSeq}`,
+    outcome: sr.outcome,
+    deltaCp: sr.deltaCp,
+    appliedCp: sr.appliedCp,
+    balanceCp: typeof sr.balanceCp === 'number' ? Math.round(sr.balanceCp) : localWalletCp,
+    status: 'settled',
+  };
+  renderHud();
+}
+
+function settleCurrentMatch(outcome: 'won' | 'lost') {
+  if (settledMatchSeq === matchSeq) return;
+  settledMatchSeq = matchSeq;
+  const deltaCp = outcome === 'won' ? MATCH_WIN_CP : MATCH_LOSS_CP;
+  const matchId = `td-${state.seed}-${matchSeq}-${state.tick}-${checksum(state)}`;
+  localWalletCp = Math.max(0, localWalletCp + deltaCp);
+  lastSettlement = {
+    matchId,
+    outcome,
+    deltaCp,
+    appliedCp: deltaCp,
+    balanceCp: localWalletCp,
+    status: bridge.embedded ? 'pending' : 'settled',
+  };
+  if (!firstFrame) {
+    bridge.send({
+      type: 'td:settle:request',
+      v: 1,
+      matchId,
+      outcome,
+      deltaCp,
+      wavesCleared: state.wave_index,
+      totalWaves: pack.waves.length,
+      baseHp: state.base_hp,
+      maxBaseHp: pack.map.base_hp,
+      kills: state.kills,
+      leaks: state.leaks,
+      checksum: checksum(state),
+    });
+  }
 }
 function setHostVisible(visible: boolean) {
   hostHidden = !visible;
@@ -194,12 +261,37 @@ function reportState() { bridge.state(gameState()); }
 
 function renderHud() {
   const s = state;
+  if ((s.phase === 'won' || s.phase === 'lost') && settledMatchSeq !== matchSeq) {
+    settleCurrentMatch(s.phase);
+  }
   const phaseText = { build: t('build'), wave: t('fight'), won: t('won'), lost: t('lost') }[s.phase];
   hud.innerHTML = '';
   const info = document.createElement('span');
   info.className = 'stats';
   info.textContent = `${t('base')} ${s.base_hp}/${pack.map.base_hp}　${t('gold')} ${s.gold}　${t('wave')} ${s.wave_index}/${pack.waves.length}　${paused || hostHidden ? t('paused') : phaseText}`;
   hud.append(info);
+
+  const cpChip = document.createElement('span');
+  cpChip.id = 'td-cp-settlement';
+  const walletCp = bridge.context.wallet?.balanceCp ?? localWalletCp;
+  if (s.phase === 'won' || s.phase === 'lost') {
+    const delta = lastSettlement?.deltaCp ?? (s.phase === 'won' ? MATCH_WIN_CP : MATCH_LOSS_CP);
+    const sign = delta > 0 ? `+${delta}` : `${delta}`;
+    cpChip.className = `stats cp-badge ${s.phase === 'won' ? 'cp-won' : 'cp-lost'}`;
+    cpChip.dataset.deltaCp = String(delta);
+    cpChip.dataset.balanceCp = String(lastSettlement?.balanceCp ?? walletCp);
+    cpChip.textContent = lang === 'zh'
+      ? `结算 ${sign} CP · ${t('wallet')} ${lastSettlement?.balanceCp ?? walletCp} CP`
+      : `Settle ${sign} CP · ${t('wallet')} ${lastSettlement?.balanceCp ?? walletCp} CP`;
+  } else {
+    cpChip.className = 'stats cp-badge';
+    cpChip.dataset.balanceCp = String(walletCp);
+    cpChip.textContent = lang === 'zh'
+      ? `${t('wallet')} ${walletCp} CP（胜+${MATCH_WIN_CP}/败${MATCH_LOSS_CP}）`
+      : `${t('wallet')} ${walletCp} CP (+${MATCH_WIN_CP}/${MATCH_LOSS_CP})`;
+  }
+  hud.append(cpChip);
+
   // 下一波预览：军师快照里的 wave.next 就是这一行——军师知道的，玩家同样看得见（#24353「不泄露玩家尚不可见的信息」）
   const nextWave = s.phase === 'build' ? pack.waves[s.wave_index] : null;
   if (nextWave) {
@@ -212,7 +304,7 @@ function renderHud() {
   }
   for (const tw of pack.towers) {
     const b = document.createElement('button');
-    b.textContent = `${tw.display_name} ${tw.cost}`;
+    b.textContent = `${tw.display_name} ${tw.cost} CP`;
     b.dataset.tower = tw.id;
     if (tw.id === selected) b.className = 'sel';
     b.disabled = s.gold < tw.cost || s.phase === 'won' || s.phase === 'lost';
@@ -270,7 +362,7 @@ function renderHud() {
   fit();
 }
 
-// ---- 嵌入时把画布缩放到容器里（任意宽高比、最小 480×360 可玩；原位模式下画布与 #hub-view 视口 1:1 叠合）
+// ---- 嵌入时把画布缩放到容器里（任意宽高比、最小 480×360 可玩；原位模式下画布与 #hub-view 视口 1:1 叠合，并动态同步 #hud 下缘安全距）
 let fitRaf = 0;
 function fit() {
   if (isInsitu()) {
@@ -279,6 +371,8 @@ function fit() {
       syncProjector();
       canvas.style.width = '100%';
       canvas.style.height = '100%';
+      const hudBottom = Math.max(56, Math.ceil((hud.offsetTop || 10) + (hud.offsetHeight || 36) + 10));
+      document.documentElement.style.setProperty('--td-hud-bottom', `${hudBottom}px`);
     });
     return;
   }
@@ -390,6 +484,9 @@ function onEvents(evs: GameEvent[]) {
       const btn = document.getElementById('start-wave');
       if (btn) btn.style.display = 'block';
     }
+    if (e.type === 'battle_ended') {
+      settleCurrentMatch(e.result);
+    }
     if (e.type === 'entity_died' && !bridge.context.reducedMotion) {
       const pt = isInsitu() && currentProjector ? currentProjector.milliToScreen(e.x, e.y) : { x: toPx(e.x), y: toPx(e.y) };
       for (let i = 0; i < 15; i++) {
@@ -427,6 +524,12 @@ function tickOnce() {
 const toPx = (m: number) => (m / CELL) * PX;
 function draw() {
   const s = state;
+  const walletCp = lastSettlement?.balanceCp ?? bridge.context.wallet?.balanceCp ?? localWalletCp;
+  const settlementText = (s.phase === 'won' || s.phase === 'lost')
+    ? (lang === 'zh'
+        ? `本局结算 ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletCp} CP`
+        : `Match ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletCp} CP`)
+    : undefined;
   if (isInsitu()) {
     if (!currentProjector) syncProjector();
     drawSpatialBattlefield(ctx, s, pack, theme, currentProjector!, {
@@ -441,12 +544,13 @@ function draw() {
       lang,
       heldText: t('held'),
       fellText: t('fell'),
+      settlementText,
     });
     if (dbg.style.display !== 'none') {
       dbg.textContent = `DEBUG  seed=${s.seed} tick=${s.tick} checksum=${checksum(s)}\n` +
         `speed=${speed}x paused=${paused} hidden=${hostHidden} enemies=${s.enemies.length} towers=${s.towers.length} kills=${s.kills} leaks=${s.leaks}\n` +
         `host: embedded=${bridge.embedded} insitu=${isInsitu()} skin=${bridge.context.skin ?? '-'} theme=${bridge.context.theme} lang=${lang} palette=${currentTheme}\n` +
-        `keys: p 暂停 · 1/2/4 倍速 · g +100金 · n 下一波 · F1/\` 开关\n` +
+        `keys: p 暂停 · 1/2/4 倍速 · g +100 CP · n 下一波 · F1/\` 开关\n` +
         `cmds=${JSON.stringify(recorded.slice(-3))}`;
     }
     return;
@@ -517,13 +621,18 @@ function draw() {
   if (s.phase === 'won' || s.phase === 'lost') {
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = theme.paper ?? theme.text; ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(s.phase === 'won' ? t('held') : t('fell'), canvas.width / 2, canvas.height / 2);
+    ctx.fillText(s.phase === 'won' ? t('held') : t('fell'), canvas.width / 2, canvas.height / 2 - 12);
+    if (settlementText) {
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillStyle = s.phase === 'won' ? (theme.ok ?? '#338a72') : (theme.danger ?? '#ff9a8a');
+      ctx.fillText(settlementText, canvas.width / 2, canvas.height / 2 + 24);
+    }
   }
   if (dbg.style.display !== 'none') {
     dbg.textContent = `DEBUG  seed=${s.seed} tick=${s.tick} checksum=${checksum(s)}\n` +
       `speed=${speed}x paused=${paused} hidden=${hostHidden} enemies=${s.enemies.length} towers=${s.towers.length} kills=${s.kills} leaks=${s.leaks}\n` +
       `host: embedded=${bridge.embedded} skin=${bridge.context.skin ?? '-'} theme=${bridge.context.theme} lang=${lang} palette=${currentTheme}\n` +
-      `keys: p 暂停 · 1/2/4 倍速 · g +100金 · n 下一波 · F1/\` 开关\n` +
+      `keys: p 暂停 · 1/2/4 倍速 · g +100 CP · n 下一波 · F1/\` 开关\n` +
       `cmds=${JSON.stringify(recorded.slice(-3))}`;
   }
 }
@@ -601,7 +710,7 @@ function showLobby(sum?: Summary, text = '') {
   lastSum = sum;
   lobby.innerHTML = `<div class="card">${lobbyIdentityHtml(sum)}
   <textarea id="desc" rows="2" placeholder="输入战局构想，例如：长坂坡雨夜，轻骑突袭">${esc(text)}</textarea>
-  <div class="lobby-presets"><button type="button" class="preset-chip" data-preset="长坂坡雨夜，轻骑突袭">长坂坡雨夜</button><button type="button" class="preset-chip" data-preset="水路栈道伏击，人海战术">水路伏击</button><button type="button" class="preset-chip" data-preset="重甲铁骑攻城，高赏金">重甲攻城</button></div>
+  <div class="lobby-presets"><button type="button" class="preset-chip" data-preset="长坂坡雨夜，轻骑突袭">长坂坡雨夜</button><button type="button" class="preset-chip" data-preset="水路栈道伏击，人海战术">水路伏击</button><button type="button" class="preset-chip" data-preset="重甲铁骑攻城，高CP奖励">重甲攻城</button></div>
   <div class="row"><button id="gen" class="primary-btn"${designing ? ' disabled' : ''}>${designing ? '军师推演中…' : '让军师设计'}</button><button id="td-direct-play" class="ghost-btn" type="button">直接原位布防</button></div>
   <div id="summary"></div></div>`;
 
@@ -683,6 +792,8 @@ function startWith(p: ContentPack) {
   PATH_CELLS = new Set(expandPath(pack.map.path.map((c) => [c.x, c.y] as [number, number])).cells.map((c) => c.join(',')));
   syncProjector();
   selected = pack.towers[0].id;
+  matchSeq++;
+  lastSettlement = null;
   state = createBattle(pack, SEED); recorded.length = 0; shots.length = 0; queue = [];
   inLobby = false; lobby.style.display = 'none'; renderHud();
   session.reset(state);
@@ -698,6 +809,22 @@ requestAnimationFrame(frame);
   checksum: () => checksum(state),
   recorded,
   get host() { return { embedded: bridge.embedded, origin: bridge.origin, context: bridge.context, hidden: hostHidden, palette: currentTheme }; },
+  get cp() {
+    return {
+      inGameCp: state.gold,
+      walletCp: bridge.context.wallet?.balanceCp ?? localWalletCp,
+      rewardWinCp: MATCH_WIN_CP,
+      penaltyLossCp: MATCH_LOSS_CP,
+      lastSettlement,
+    };
+  },
+  settleNow: (outcome: 'won' | 'lost') => {
+    state = { ...state, phase: outcome, base_hp: outcome === 'lost' ? 0 : Math.max(1, state.base_hp) };
+    settleCurrentMatch(outcome);
+    renderHud();
+    draw();
+    return lastSettlement;
+  },
   get insitu() { return isInsitu(); },
   get spatial() {
     if (!isInsitu()) return null;
@@ -713,7 +840,15 @@ requestAnimationFrame(frame);
       origin: p.origin,
       cellPx: p.cellPx,
       hostMap: p.hostMap,
-      waypoints: pack.map.path.map((c) => p.cellToScreen(c.x + 0.5, c.y + 0.5)),
+      roadPlan: p.roadPlan,
+      ambientTrafficCleared: p.hostMap?.ambientTrafficCleared ?? true,
+      enemyModels: pack.enemies.map((e) => ({
+        id: e.id,
+        name: e.display_name,
+        modelKind: getMinionModelKind(e, p.hostMap?.skin),
+        vfx: ['auraRing', 'wakeTrail', 'battleCrest'],
+      })),
+      waypoints: p.waypoints,
       tacticalSlots: p.tacticalSlots.slice(0, 16),
       slotScreen: (slot: number) => { const c = slotCell(pack, slot); return c ? p.cellToScreen(c.x + 0.5, c.y + 0.5) : null; },
       cellScreen: (cx: number, cy: number) => p.cellToScreen(cx + 0.5, cy + 0.5),

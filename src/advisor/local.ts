@@ -9,8 +9,8 @@ import type { Advice, AdviceKind, AdviceMove, AdviceOption, Snapshot } from './t
 export const LOCAL_ADVISOR_NAME = { zh: '本地模板军师', en: 'Local template advisor' } as const;
 
 const SAY = {
-  zh: ['先稳住基地，再谈花活。', '敌人走的路是固定的，塔不是。', '省下的金币也是战斗力。', '我押一注，你来打脸。', '别贪，漏一只不致命，漏一波才是。', '守住拐角，守住全局。'],
-  en: ['Hold the base first, flourish later.', 'Their road is fixed; your towers are not.', 'Gold unspent is firepower saved.', 'I will bet; you prove me wrong.', 'Leaking one is fine, leaking a wave is not.', 'Own the corners, own the map.'],
+  zh: ['先稳住基地，再谈花活。', '敌人走的路是固定的，塔不是。', '省下的 CP 也是战斗力。', '我押一注，你来打脸。', '别贪，漏一只不致命，漏一波才是。', '守住拐角，守住全局。'],
+  en: ['Hold the base first, flourish later.', 'Their road is fixed; your towers are not.', 'CP unspent is firepower saved.', 'I will bet; you prove me wrong.', 'Leaking one is fine, leaking a wave is not.', 'Own the corners, own the map.'],
 } as const;
 
 /** 预演：在当前状态上落下 moves（一 tick 内）、开波、打到波结束；返回这一波漏了几只（含落塔失败也照常算） */
@@ -61,13 +61,13 @@ function plans(snap: Snapshot, state: BattleState, lang: 'zh' | 'en'): Plan[] {
       risk: zh ? `出手慢（${heavy.every}s 一发），人海波会被漏过去。` : `Slow (${heavy.every}s per shot); swarms will slip past.`,
     });
   }
-  // c 攒一手：这波不花钱（或只补一座），把赏金攒给下一波
+  // c 攒一手：这波不花 CP（或只补一座），把 CP 奖励攒给下一波
   const nextNext = snap.wave.index + 1 < snap.wave.total;
   out.push({
     title: zh ? '攒一手' : 'Save up', moves: [],
     why: zh
-      ? (nextNext ? `这波赏金 ${nextReward} 金，攒着下波一次上${towers[towers.length - 1]?.name ?? '大塔'}。` : `最后一波了，手里的 ${snap.gold} 金留着也没用——想清楚再花。`)
-      : (nextNext ? `This wave pays ${nextReward} gold; save for a ${towers[towers.length - 1]?.name ?? 'big tower'} next wave.` : `Last wave: unspent gold is worth nothing—spend with intent.`),
+      ? (nextNext ? `这波可获 ${nextReward} CP，攒着下波一次上${towers[towers.length - 1]?.name ?? '大塔'}。` : `最后一波了，手里的 ${snap.gold} CP 留着也没用——想清楚再花。`)
+      : (nextNext ? `This wave pays ${nextReward} CP; save for a ${towers[towers.length - 1]?.name ?? 'big tower'} next wave.` : `Last wave: unspent CP is worth nothing—spend with intent.`),
     risk: zh ? `现在不补塔，这波可能多漏几只（基地 ${snap.base.hp}/${snap.base.max}）。` : `No new towers now: more may leak (base ${snap.base.hp}/${snap.base.max}).`,
   });
   // 去重（同一组 moves 只留一条），最多 3 条
@@ -80,14 +80,14 @@ function tactical(snap: Snapshot, state: BattleState, lang: 'zh' | 'en'): Plan[]
   const affordable = [...snap.towers].filter((t) => t.cost <= snap.gold).sort((a, b) => dps(b) - dps(a))[0];
   const open = allSlots(state).filter((x) => x.open);
   if (!affordable || !open.length) {
-    return [{ title: zh ? '先别动' : 'Hold', moves: [], why: zh ? `金币 ${snap.gold}，还买不起塔；等赏金。` : `Gold ${snap.gold}: nothing affordable yet; wait for bounties.` }];
+    return [{ title: zh ? '先别动' : 'Hold', moves: [], why: zh ? `当前 ${snap.gold} CP，还买不起塔；等击破奖励。` : `CP ${snap.gold}: nothing affordable yet; wait for rewards.` }];
   }
   const s = open.sort((a, b) => (b.reach[affordable.id] ?? 0) - (a.reach[affordable.id] ?? 0) || a.id - b.id)[0];
   const front = Math.max(0, ...Object.values(snap.field).map((f) => f.front));
   return [{
     title: zh ? '补一座' : 'Plug one', moves: [{ slot: s.id, tower: affordable.id }],
     why: zh ? `最前的敌人已走到 ${Math.round(front * 100)}%，${affordable.name}落在覆盖 ${s.reach[affordable.id]} 格的槽上还来得及。` : `Front enemy at ${Math.round(front * 100)}%; a ${affordable.name} on a ${s.reach[affordable.id]}-cell slot still makes it.`,
-    risk: zh ? '花光金币，下波开局会紧。' : 'Spends your gold; next wave starts tight.',
+    risk: zh ? '花光 CP，下波开局会紧。' : 'Spends your CP; next wave starts tight.',
   }];
 }
 
@@ -107,7 +107,7 @@ export function adviseLocal(kind: Exclude<AdviceKind, 'level'>, snap: Snapshot, 
       const id = GAMBIT_IDS[snap.wave.index % GAMBIT_IDS.length];
       const g = GAMBITS[id];
       const bonus = snap.gambit.offers.find((o) => o.id === id)?.bonus ?? 0;
-      advice.gambit = { id, line: lang === 'zh' ? `${g.name[lang]}：${g.line[lang]}，现在 +${bonus} 金。` : `${g.name[lang]}: ${g.line[lang]}, +${bonus} gold now.` };
+      advice.gambit = { id, line: lang === 'zh' ? `${g.name[lang]}：${g.line[lang]}，现在 +${bonus} CP。` : `${g.name[lang]}: ${g.line[lang]}, +${bonus} CP now.` };
     }
   }
   return advice;

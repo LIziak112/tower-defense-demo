@@ -49,8 +49,8 @@ export function balanceWarnings(pack: ContentPack): { warnings: VWarning[]; runs
     warnings.push({ code: 'W1_FIRST_WAVE_HARD', message: `首波可能打不过：贪心放塔预演第 1 波漏了 ${greedy.first_wave_leaks} 只` });
   const income = pack.waves.reduce((a, w) => a + w.groups.reduce((b, g) => b + g.count * (pack.enemies.find((e) => e.id === g.enemy_id)?.reward ?? 0), 0), 0);
   const minCost = Math.min(...pack.towers.map((t) => t.cost));
-  if (income < minCost) warnings.push({ code: 'W2_ECONOMY', message: `整局赏金 ${income} 还买不起一座最便宜的塔（${minCost}）` });
-  if (income > minCost * 40) warnings.push({ code: 'W2_ECONOMY', message: `整局赏金 ${income} 远超塔价，金币会溢出` });
+  if (income < minCost) warnings.push({ code: 'W2_ECONOMY', message: `整局 CP 奖励 ${income} 还买不起一座最便宜的塔（${minCost} CP）` });
+  if (income > minCost * 40) warnings.push({ code: 'W2_ECONOMY', message: `整局 CP 奖励 ${income} 远超塔价，CP 会溢出` });
   if (none.result === 'won') warnings.push({ code: 'DRYRUN_TOO_EASY', message: '预演：一座塔不放也能赢，关卡可能太简单' });
   if (greedy.result !== 'won') warnings.push({ code: 'DRYRUN_TOO_HARD', message: `预演：贪心放塔也${greedy.result === 'lost' ? '输了' : '没打完'}（基地剩 ${greedy.base_hp}），关卡可能太难` });
   return { warnings, runs };

@@ -91,7 +91,7 @@ function scheduleWave(s: BattleState, ev: GameEvent[]) {
   ev.push({ type: 'wave_started', wave: s.wave_index, total });
 }
 
-/** 变招：只在建造期、还有下一波、本建造期没接过时成立；成立即刻加金币，波次改动在 scheduleWave 里兑现。 */
+/** 变招：只在建造期、还有下一波、本建造期没接过时成立；成立即刻加 CP，波次改动在 scheduleWave 里兑现。 */
 function applyGambit(s: BattleState, c: Extract<Command, { type: 'gambit' }>, ev: GameEvent[]) {
   const reject = (code: string, message: string) => ev.push({ type: 'gambit_rejected', code, message, id: String(c.id) });
   if (!isGambitId(c.id)) return reject('UNKNOWN_GAMBIT', `没有这张变招：${String(c.id)}`);
@@ -104,7 +104,7 @@ function applyGambit(s: BattleState, c: Extract<Command, { type: 'gambit' }>, ev
   ev.push({ type: 'gambit_accepted', id: c.id, wave: s.wave_index, bonus });
 }
 
-/** Atomic build: all checks first, then mutate. Any failure => no gold spent, no cell taken. */
+/** Atomic build: all checks first, then mutate. Any failure => no CP spent, no cell taken. */
 function applyBuild(s: BattleState, c: Extract<Command, { type: 'build' }>, ev: GameEvent[]) {
   const reject = (code: string, message: string) =>
     ev.push({ type: 'build_rejected', code, message, tower_id: c.tower_id, x: c.x, y: c.y });
@@ -113,7 +113,7 @@ function applyBuild(s: BattleState, c: Extract<Command, { type: 'build' }>, ev: 
   if (!Number.isInteger(c.x) || !Number.isInteger(c.y)) return reject('BAD_CELL', '坐标必须是整数格');
   if (!s.pack.map.buildable_cells.some((b) => b.x === c.x && b.y === c.y)) return reject('NOT_BUILDABLE', '这里不能建塔');
   if (s.occupied.includes(key(c.x, c.y))) return reject('OCCUPIED', '这格已经有塔了');
-  if (s.gold < def.cost) return reject('NOT_ENOUGH_GOLD', `金币不足（需要 ${def.cost}，现有 ${s.gold}）`);
+  if (s.gold < def.cost) return reject('NOT_ENOUGH_GOLD', `CP 不足（需要 ${def.cost} CP，现有 ${s.gold} CP）`);
   s.gold -= def.cost;
   s.occupied.push(key(c.x, c.y));
   const t: TowerInst = {

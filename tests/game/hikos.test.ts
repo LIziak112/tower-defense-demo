@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { contextFromMessage, contextFromQuery, createHostBridge, DEFAULT_CONTEXT, hostOrigin, parseHex, parseSkin } from '../../src/game/hikos';
 import { HIKOS_SKINS, paletteForContext, skinForContext, DEFAULT_ACCENT, mix } from '../../src/game/skins';
-import { createSpatialProjector, parseSpatialMap } from '../../src/game/spatialMap';
+import { createSpatialProjector, getMinionModelKind, parseSpatialMap } from '../../src/game/spatialMap';
 import { cleanTechTerms, extractNaturalAdvisorSpeech, normalizeLlmAdvice, sanitizeLlmPack } from '../../src/game/chatFormat';
 import { validatePack } from '../../src/content/validate';
+import { balanceWarnings } from '../../src/content/dryrun';
+import { adviseLocal } from '../../src/advisor/local';
+import { advicePrompt } from '../../src/advisor/prompt';
+import { createBattle } from '../../src/runtime/sim';
+import { buildSnapshot, slotCell } from '../../src/advisor/snapshot';
 import { parseAdvice } from '../../src/advisor/types';
 import { DEFAULT_PACK } from '../../src/content/default';
-import { slotCell } from '../../src/advisor/snapshot';
 
 describe('hikos URL query（接入说明 §1.5）', () => {
   it('宿主拼的完整 query 全部解析', () => {
@@ -233,9 +237,8 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
     expect(speechHtml).not.toContain('enemy_heavy_01');
     expect(speechHtml).not.toContain('流式');
 
-    // 3. normalizeLlmAdvice 裁剪角色扮演超长文本，通过 parseAdvice
+    // 3. normalizeLlmAdvice 裁剪角色扮演超长文本并补齐缺省 basedOn，通过 parseAdvice
     const norm = normalizeLlmAdvice({
-      basedOn: 0,
       say: '老夫姜尚观此阵势，敌军先锋虽然来势汹汹，但只要在河岸折角布设双弩即可稳如泰山，主公勿忧，且看老夫一计定乾坤！',
       options: [{ id: 'a', title: '稳守河岸折角大阵之策', why: '理由充分', moves: [{ slot: 1, tower: 'crossbow' }] }],
     }, 15);
@@ -260,5 +263,115 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
     const healed = sanitizeLlmPack(flawedPack);
     const vr = validatePack(healed);
     expect(vr.ok).toBe(true);
+  });
+
+  it('大厅 #25801 ①②③：四款皮肤原生道路复用率 80%–100%、起终点绑定原生建筑、小兵复用原生车人模型、全视口安全区无遮挡', () => {
+    const skins = [
+      { id: 'union-atlas-3d', layout: 'river-grid', azimuth: -0.38, pitch: 0.78 },
+      { id: 'metropolis-riverside-3d', layout: 'district-grid', azimuth: -0.38, pitch: 0.78 },
+      { id: 'gothic-cathedral-3d', layout: 'concentric-town', azimuth: -2.55, pitch: 0.65 },
+      { id: 'harbor-district-3d', layout: 'quays', azimuth: -0.32, pitch: 0.74 },
+    ] as const;
+
+    for (const sk of skins) {
+      const hostMap = parseSpatialMap({
+        skin: sk.id,
+        layout: sk.layout,
+        w: 1440,
+        h: 856,
+        azimuth: sk.azimuth,
+        pitch: sk.pitch,
+        zoom: 1.0,
+        center: { x: 740, y: 420 },
+        home: { key: 'home', kind: 'landmark', label: '母星核心', x: 860, y: 460, wx: 0, wz: 0 },
+        spawnBuilding: { key: 'channel:mother:gate', kind: 'entity', label: '外环原生哨站', x: 420, y: 280, wx: -18, wz: -12 },
+        baseBuilding: { key: 'home', kind: 'landmark', label: '母星核心', x: 860, y: 460, wx: 0, wz: 0 },
+        ambientTrafficCleared: true,
+        landmarks: [{ key: 'home', kind: 'landmark', label: '母星核心', x: 860, y: 460, wx: 0, wz: 0 }],
+        nodes: [{ key: 'channel:mother:gate', kind: 'entity', label: '外环原生哨站', x: 420, y: 280, wx: -18, wz: -12 }],
+      });
+      const proj = createSpatialProjector(DEFAULT_PACK, 1440, 856, hostMap);
+      expect(proj.roadPlan.nativeRatio).toBeGreaterThanOrEqual(0.8);
+      expect(proj.roadPlan.nativeRatio).toBeLessThanOrEqual(1.0);
+      expect(proj.roadPlan.bridgeRatio).toBeGreaterThanOrEqual(0);
+      expect(proj.roadPlan.bridgeRatio).toBeLessThanOrEqual(0.2);
+      expect(Math.round((proj.roadPlan.nativeRatio + proj.roadPlan.bridgeRatio) * 1000)).toBe(1000);
+      expect(proj.roadPlan.startBuilding.label).toBe('外环原生哨站');
+      expect(proj.roadPlan.endBuilding.label).toBe('母星核心');
+      expect(proj.hostMap?.ambientTrafficCleared).toBe(true);
+
+      // 验证所有路径节点均落在顶部 HUD、左右侧栏与底部 Dock 之间的安全区内
+      for (const wp of proj.waypoints) {
+        expect(wp.x).toBeGreaterThanOrEqual(280);
+        expect(wp.x).toBeLessThanOrEqual(1440 - 280);
+        expect(wp.y).toBeGreaterThanOrEqual(80);
+        expect(wp.y).toBeLessThanOrEqual(856 - 130);
+      }
+    }
+
+    // 验证小兵分类映射：重甲/盾车 -> heavy_vehicle，轻骑/港口 -> vehicle，普通步卒 -> pedestrian
+    expect(getMinionModelKind({ id: 'shield', display_name: '重盾甲士', hp: 260, speed: 45 }, 'union-atlas-3d')).toBe('heavy_vehicle');
+    expect(getMinionModelKind({ id: 'raider', display_name: '轻骑斥候', hp: 90, speed: 95 }, 'metropolis-riverside-3d')).toBe('vehicle');
+    expect(getMinionModelKind({ id: 'grunt', display_name: '步卒', hp: 100, speed: 55 }, 'union-atlas-3d')).toBe('pedestrian');
+    expect(getMinionModelKind({ id: 'grunt', display_name: '步卒', hp: 100, speed: 55 }, 'harbor-district-3d')).toBe('vehicle');
+  });
+
+  it('大厅 #25801 ④：全面去除“金币”统一使用 CP，且支持单局胜 +10 CP / 败 -10 CP 宿主桥接结算与幂等回包', () => {
+    const battle = createBattle(DEFAULT_PACK, 42);
+    const snap = buildSnapshot(battle);
+    const localAdv = adviseLocal('next-wave', snap, battle, 'zh');
+    const localJson = JSON.stringify(localAdv);
+    expect(localJson).not.toContain('金币');
+    expect(localJson).toContain('CP');
+
+    const msgsZh = advicePrompt('next-wave', snap, 'zh');
+    expect(JSON.stringify(msgsZh)).not.toContain('金币是唯一资源');
+    expect(JSON.stringify(msgsZh)).toContain('CP');
+
+    const bw = balanceWarnings(DEFAULT_PACK);
+    expect(JSON.stringify(bw)).not.toContain('金币');
+    expect(cleanTechTerms('花费 60 金币可得 30 赏金与 15 金')).toBe('花费 60 CP可得 30 CP 奖励与 15 CP');
+
+    // 验证 createHostBridge 结算往返（td:settle:request -> hikos:settle:reply）
+    const sent: Record<string, unknown>[] = [];
+    let listener: ((e: MessageEvent) => void) | null = null;
+    const parent = { postMessage: (m: Record<string, unknown>) => { sent.push(m); } };
+    const win = {
+      location: { search: '?v=1&skin=union-atlas-3d', origin: 'https://space.hikos.cn' },
+      parent,
+      addEventListener: (_t: string, fn: (e: MessageEvent) => void) => { listener = fn; },
+      removeEventListener: () => { listener = null; },
+    } as unknown as Window;
+
+    const replies: Record<string, unknown>[] = [];
+    const bridge = createHostBridge(win, {
+      onSettleReply: (r) => replies.push(r as unknown as Record<string, unknown>),
+    });
+    bridge.ready();
+    bridge.send({ type: 'td:settle:request', v: 1, matchId: 'm-win-1', outcome: 'won', deltaCp: 10 });
+    expect(sent.at(-1)).toMatchObject({ type: 'td:settle:request', matchId: 'm-win-1', outcome: 'won', deltaCp: 10 });
+
+    listener!({
+      source: parent,
+      origin: 'https://space.hikos.cn',
+      data: {
+        type: 'hikos:settle:reply',
+        v: 1,
+        matchId: 'm-win-1',
+        ok: true,
+        outcome: 'won',
+        deltaCp: 10,
+        appliedCp: 10,
+        balanceCp: 1010,
+        netCp: 10,
+        wonCount: 1,
+        lostCount: 0,
+        idempotent: false,
+      },
+    } as unknown as MessageEvent);
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ matchId: 'm-win-1', ok: true, outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 1010, idempotent: false });
+    expect(bridge.context.wallet).toEqual({ balanceCp: 1010, netCp: 10, wonCount: 1, lostCount: 0 });
   });
 });
