@@ -1,0 +1,12 @@
+{
+  "legacyLevels": [
+    { "damage": 100, "range": 100, "nextCost": 45 },
+    { "damage": 135, "range": 108, "nextCost": 60 },
+    { "damage": 175, "range": 116, "nextCost": 75 },
+    { "damage": 220, "range": 124, "nextCost": 90 },
+    { "damage": 270, "range": 132, "nextCost": 110 },
+    { "damage": 325, "range": 140, "nextCost": null }
+  ],
+  "wave": { "prep_ticks": 900, "gold_per_second": 1, "cooldown_ticks_per_second": 2, "build_cooldown_ticks": 15 },
+  "difficulty": 1
+}

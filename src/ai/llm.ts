@@ -2,11 +2,11 @@
 // 支持 SSE 流式增量（onStream）并将超时策略设为首包 + 空闲超时（只要流式 chunk 持续到达就重置定时器，不再 20s 无反馈直接 TIMEOUT）。
 // 本模块不读任何端点 / 密钥（D2 护栏）：请求经通道交给宿主代理 / 开发代理，由它们加凭据。
 import assets from '../content/assets.json';
-import A from '../content/packs/changban_rain_night.json';
+import { openingRaw } from '../content/opening';
 import type { RawPack } from '../content/schema';
 import { levelPrompt } from '../advisor/prompt';
 import { LIMITS, type AdvisorAgent, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type AdvisorStreamEvent } from '../advisor/types';
-import { sanitizeLlmPack } from '../game/chatFormat';
+import { sanitizeLlmPack } from '../content/sanitize';
 import type { GenerateInput } from './provider';
 
 export interface LlmProviderOptions {
@@ -62,7 +62,7 @@ export class LlmContentProvider {
     const reqId = `L${++this.seq}`;
     const activeAgent = this.agent ?? this.channel.agent ?? null;
     const prompt = levelPrompt({
-      text: input.text, example: A as RawPack, previous: input.previous, errors: input.errors,
+      text: input.text, example: openingRaw(), previous: input.previous, errors: input.errors,
       assetIds: assets.assets.map((a) => a.asset_id), paletteIds: assets.palettes.map((p) => p.palette_id), tilesetIds: assets.tilesets.map((t) => t.tileset_id),
       agent: activeAgent,
     }, this.lang);

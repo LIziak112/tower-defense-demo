@@ -90,7 +90,8 @@
       padding: 2px 6px;
     }
 
-    #board { max-width: 100%; height: auto; cursor: crosshair; border-radius: 4px; }
+    #board { max-width: 100%; height: auto; cursor: default; border-radius: 4px; }
+    #board:is([data-build-state="selected"], [data-build-state="valid"], [data-build-state="invalid"]) { cursor: crosshair; }
     #debug { font: 11px/1.35 "IBM Plex Mono", ui-monospace, monospace; background: rgba(10, 14, 20, .82); color: #e8eef5; padding: 6px 10px; margin: 0; max-width: 640px; border-radius: 4px; white-space: pre-wrap; }
 
     /* ── 军师战术简报对话框 (#advisor) —— 贴合皮肤、尺寸紧凑、支持折叠 ── */
@@ -604,6 +605,84 @@
       html[data-insitu="true"] #hud { top: 8px; left: 8px; right: 8px; transform: none; max-width: none; }
       html[data-insitu="true"] #advisor { left: 8px; right: 8px; top: auto; bottom: 108px; width: auto; max-height: 34%; }
       html[data-insitu="true"] #lobby { top: 64px; right: 8px; left: 8px; width: auto; }
+    }
+    html[data-insitu="false"] body {
+      overflow-y: auto;
+      background: radial-gradient(ellipse at 45% 0, color-mix(in srgb, var(--td-paper) 60%, var(--td-bg)), var(--td-bg) 72%);
+    }
+    html[data-insitu="false"] #game-container {
+      width: min(100%, 1120px);
+      height: auto;
+      min-height: 100%;
+      margin: 0 auto;
+      padding: clamp(12px, 2.4vw, 28px);
+      gap: 14px;
+    }
+    html[data-insitu="false"] #hud {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      justify-content: flex-start;
+      background: var(--td-paper);
+      border: 1px solid var(--td-hair);
+      border-radius: 10px;
+    }
+    html[data-insitu="false"] .battle-title { width: 100%; font-size: clamp(18px, 2.5vw, 28px); letter-spacing: .04em; }
+    html[data-insitu="false"] #board {
+      align-self: center;
+      flex: none;
+      border-radius: 10px;
+      box-shadow: 0 0 0 1px var(--td-hair), 0 14px 30px rgba(0, 0, 0, .22);
+    }
+    html[data-insitu="false"] #advisor {
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+    .battle-briefing {
+      flex: 1 0 100%;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+      color: var(--td-ink);
+      line-height: 1.5;
+    }
+    #hud button small { display: block; font-size: 10px; opacity: .8; }
+    #advisor .adv-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    #advisor .adv-preview {
+      border: 1px solid var(--td-hair);
+      border-radius: 4px;
+      padding: 2px 9px;
+      background: transparent;
+      color: var(--td-ink);
+      cursor: pointer;
+    }
+    #advisor .adv-preview[aria-pressed="true"] { border-color: var(--td-accent); color: var(--td-accent); }
+    #advisor .adv-line { flex-wrap: wrap; }
+    #advisor .adv-opt:has(.adv-preview[aria-pressed="true"]) { border-color: var(--td-accent); }
+    #game-container button:not(:disabled):hover { filter: brightness(1.12); }
+    #game-container button:not(:disabled):active { translate: 0 1px; }
+    #game-container :is(button, select, input, textarea):focus-visible { outline: 2px solid var(--td-accent); outline-offset: 3px; }
+    html[data-insitu="false"] #game-container :is(button, select) { min-height: 44px; }
+    html[data-insitu="false"] #lobby { z-index: 4; }
+    @media (min-width: 880px) {
+      html[data-insitu="false"] #game-container {
+        display: grid;
+        grid-template-columns: minmax(0, 2.15fr) minmax(280px, 1fr);
+        align-items: start;
+        align-content: start;
+      }
+      html[data-insitu="false"] #hud, html[data-insitu="false"] #debug { grid-column: 1 / -1; }
+      html[data-insitu="false"] #hud { position: relative; }
+      html[data-insitu="false"] #theme-select { position: absolute; right: 12px; top: 9px; }
+      html[data-insitu="false"] .battle-title { padding-right: 140px; }
+      html[data-insitu="false"] #board { max-height: max(300px, calc(100dvh - 190px)); justify-self: center; }
+      html[data-insitu="false"] #advisor { width: 100%; max-height: max(300px, calc(100dvh - 190px)); overflow-y: auto; }
+    }
+    @media (pointer: coarse) {
+      #game-container :is(button, select) { min-height: 44px; }
     }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
   </style>

@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2020", "module": "ESNext", "moduleResolution": "bundler",
     "strict": true, "noEmit": true, "skipLibCheck": true, "resolveJsonModule": true, "lib": ["ES2020", "DOM"],
-    "types": ["vitest/globals", "node"]
+    "types": ["vitest/globals", "node", "vite/client"]
   },
   "include": ["src/runtime", "src/content", "src/game", "src/ai", "src/advisor", "src/ui", "tests"]
 }

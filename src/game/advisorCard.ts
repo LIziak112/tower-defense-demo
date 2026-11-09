@@ -1,8 +1,4 @@
-// 军师 HUD 辅助对话框（表现层，大厅 #25648 / 任务 997eeae6 重设计）：
-// 1. 贴合皮肤效果：紧凑型战术简报浮卡，顶部带皮肤 accent 装饰条，支持一键折叠/展开，不遮挡地图；
-// 2. 聊天式自然语言输出：思考阶段复用 extractNaturalAdvisorSpeech 渲染自然语言战策气泡，严禁展示原始 JSON 或「流式」「TIMEOUT」等内部词；
-// 3. 保留全部 E2E 数据属性读点（data-status / data-source / data-provider / data-agent / data-option / data-adopt / data-gambit）。
-import type { ContentPack } from '../runtime/types';
+import type { BattleState } from '../runtime/types';
 import { GAMBITS } from '../runtime/gambit';
 import { slotCell } from '../advisor/snapshot';
 import type { AdvisorView } from '../advisor/session';
@@ -12,6 +8,7 @@ export interface CardHandlers {
   adopt(optionId: string): void;
   takeGambit(): void;
   setAutopilot(on: boolean): void;
+  preview(optionId: string): void;
 }
 
 const STR = {
@@ -65,7 +62,8 @@ const isSafeAvatarUrl = (u?: string): boolean =>
 
 let cardCollapsed = false;
 
-export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: ContentPack, lang: 'zh' | 'en', phase: string, h: CardHandlers) {
+export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, state: BattleState, lang: 'zh' | 'en', previewId: string | null, h: CardHandlers) {
+  const { pack, phase, gold, occupied } = state;
   const s = STR[lang];
   root.innerHTML = '';
   root.dataset.status = view.status;
@@ -134,7 +132,7 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   foldBtn.onclick = (ev) => {
     ev.stopPropagation();
     cardCollapsed = !cardCollapsed;
-    renderAdvisorCard(root, view, pack, lang, phase, h);
+    renderAdvisorCard(root, view, state, lang, previewId, h);
   };
   metaRight.append(foldBtn);
   head.append(metaRight);
@@ -160,7 +158,7 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   }
 
   if (view.betLine) root.append(el('p', 'adv-betline', view.betLine));
-  if (view.notice && view.status !== 'thinking') {
+  if (view.notice && view.status !== 'thinking' && cur?.reason !== 'NO_TRANSPORT') {
     const cleanedNotice = cleanTechTerms(view.notice, lang);
     if (cleanedNotice) root.append(el('p', 'adv-notice', cleanedNotice));
   }
@@ -183,27 +181,48 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
 
     // 汇总器械数量（如「弩车×2」），不再罗列生硬的「槽38←弩车」
     const counts = new Map<string, number>();
+    let cost = 0;
+    let blocked = false;
     for (const m of o.moves) {
       const nm = towerName(m.tower);
       counts.set(nm, (counts.get(nm) ?? 0) + 1);
+      cost += pack.towers.find((tower) => tower.id === m.tower)?.cost ?? 0;
+      const cell = slotCell(pack, m.slot);
+      if (!cell || occupied.includes(`${cell.x},${cell.y}`)) blocked = true;
     }
     const movesSummary = o.moves.length
       ? [...counts.entries()].map(([nm, n]) => (n > 1 ? `${nm}×${n}` : nm)).join(' + ')
       : s.noSpend;
-    const movesChip = el('span', 'adv-moves', movesSummary);
+    const movesChip = el('span', 'adv-moves', `${movesSummary} · ${cost}${lang === 'zh' ? ' 金' : ' gold'}`);
 
     const isAdopted = cur.adopted.includes(o.id);
     const btn = el('button', `adv-adopt${isAdopted ? ' is-adopted' : ''}`, isAdopted ? s.adopted : s.adopt);
     btn.type = 'button';
     btn.dataset.adopt = o.id;
-    btn.disabled = !canAct || isAdopted || !o.moves.length;
+    btn.disabled = !canAct || isAdopted || !o.moves.length || cost > gold || blocked;
     btn.onclick = () => h.adopt(o.id);
 
-    topRow.append(tag, titleB, movesChip, btn);
+    topRow.append(tag, titleB, movesChip);
     card.append(topRow);
 
     card.append(el('p', 'adv-why', o.why));
     if (o.risk) card.append(el('p', 'adv-risk', s.risk + o.risk));
+    if (o.moves.length) {
+      const actions = el('div', 'adv-actions');
+      const preview = el('button', 'adv-preview', lang === 'zh' ? '看落点' : 'Show positions');
+      preview.type = 'button';
+      preview.setAttribute('aria-pressed', String(previewId === o.id));
+      preview.disabled = isAdopted || blocked || !canAct;
+      preview.onclick = () => h.preview(o.id);
+      actions.append(preview, btn);
+      card.append(actions);
+      if (!isAdopted && (blocked || cost > gold)) {
+        card.append(el('p', 'adv-risk', lang === 'zh' ? (blocked ? '落点已占用' : '金币不足') : (blocked ? 'A position is occupied' : 'Not enough gold')));
+      }
+    } else {
+      btn.hidden = true;
+      card.append(btn);
+    }
 
     list.append(card);
   }
@@ -229,31 +248,3 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
 }
 
 /** 棋盘叠层（非原位独立页兜底）：把当前建议各选项的落点画出来 */
-export function drawAdvisorOverlay(ctx: CanvasRenderingContext2D, view: AdvisorView, pack: ContentPack, px: number, accent: string) {
-  const cur = view.current;
-  if (!cur) return;
-  ctx.save();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = accent;
-  ctx.fillStyle = accent;
-  ctx.font = 'bold 12px sans-serif';
-  ctx.textAlign = 'left';
-  const seen = new Set<string>();
-  for (const o of cur.advice.options) {
-    for (const m of o.moves) {
-      const c = slotCell(pack, m.slot);
-      if (!c) continue;
-      const k = `${c.x},${c.y}`;
-      ctx.globalAlpha = cur.adopted.includes(o.id) ? 0.35 : 0.9;
-      ctx.setLineDash(o.id === 'a' ? [] : [4, 3]);
-      ctx.strokeRect(c.x * px + 4, c.y * px + 4, px - 8, px - 8);
-      if (!seen.has(k)) {
-        ctx.fillText(o.id.toUpperCase(), c.x * px + 7, c.y * px + 15);
-        seen.add(k);
-      } else {
-        ctx.fillText(o.id.toUpperCase(), c.x * px + 7 + 10 * (o.id === 'b' ? 1 : 2), c.y * px + 15);
-      }
-    }
-  }
-  ctx.restore();
-}

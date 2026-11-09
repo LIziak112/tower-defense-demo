@@ -19,6 +19,7 @@ for (const [w, h] of [[1280, 720], [1920, 1080], [390, 844]] as const) {
     await page.waitForSelector('#board', { state: 'visible' });
 
     const g0 = await gold(page);
+    await page.locator('button[data-tower="crossbow"]').click();
     const c = await cell(page, 1, 0);
     await page.mouse.click(c.x, c.y);
     await expect.poll(() => gold(page)).toBe(g0 - TOWER_COST);
@@ -51,7 +52,8 @@ test('触控连续点触每次只建一座塔 @390x844', async ({ browser }) => 
     g = b;
     return a === b && b > before + 5 * TOWER_COST;
   }, { timeout: 15_000 }).toBe(true);
-  for (const cx of [1, 2, 3, 5, 6]) {
+  for (const cx of [1, 2, 3, 4, 5]) {
+    await page.locator('button[data-tower="crossbow"]').tap();
     const c = await cell(page, cx, 0);
     await page.touchscreen.tap(c.x, c.y);
     await expect.poll(() => gold(page)).toBe(g - TOWER_COST);

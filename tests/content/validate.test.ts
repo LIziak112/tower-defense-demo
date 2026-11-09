@@ -24,7 +24,7 @@ describe('D2 三层校验', () => {
     ['敌 hp', (p) => (p.enemies[0].components.Health.max = 99999), '/enemies/0/components/Health/max'],
     ['敌 speed', (p) => (p.enemies[1].components.Movement.speed_milli_per_tick = 151), '/enemies/1/components/Movement/speed_milli_per_tick'],
     ['敌 gold', (p) => (p.enemies[2].components.Reward.gold = 0), '/enemies/2/components/Reward/gold'],
-    ['每波总数', (p) => (p.waves[1].groups[0].count = 41), '/waves/1/groups'],
+    ['每波总数', (p) => (p.waves[1].groups[0].count = 151), '/waves/1/groups'],
     ['波次数', (p) => (p.waves = p.waves.slice(0, 2)), '/waves'],
     ['路径折点', (p) => { p.map.path = [[0, 1], [4, 1], [4, 3]]; }, '/map/path'],
   ];
@@ -78,7 +78,7 @@ describe('D2 数据驱动 / Mock 军师 / dry-run', () => {
 
   it('越界后 Mock 按 path 夹回区间', () => {
     const mp = new MockProvider();
-    const bad = clone(A); bad.enemies[0].components.Health.max = 99999; bad.waves[0].groups[0].count = 60;
+    const bad = clone(A); bad.enemies[0].components.Health.max = 99999; bad.waves[0].groups[0].count = 160;
     const v = validatePack(bad); expect(v.ok).toBe(false);
     const fixed = mp.generateContent({ text: 'x', previous: bad, errors: v.errors });
     expect(validatePack(fixed).ok).toBe(true);

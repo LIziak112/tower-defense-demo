@@ -1,10 +1,36 @@
 # 墨阵 · 守少主
 
-项目的长期目标是：**让玩家通过自然语言创造、修改和组合塔防世界的规则，由受约束的内容格式和确定性 Runtime 执行。** 当前可玩原型叫“墨阵 · 守少主”，采用三国文字合成塔防玩法。
+项目的长期目标是让玩家通过自然语言创造、修改和组合塔防世界的规则，由受约束的内容格式和确定性 Runtime 执行。
 
-直接用浏览器打开 `index.html`。回归检查：`node test-runtime.js` 与 `node test-demo.js`。
+运行 `npm ci` 和 `npm run dev`，打开 Vite 给出的地址。选「开始长坂坡守城」可直接玩五波战役。军师的「看落点」会在地图上标记当前方案，采纳前可以比较花费和本地预演。
 
-当前“生成战局”和“AI 军师”使用本地关键词匹配与预设模板，尚未接入真实 LLM。已有内容包、有限规则、校验和无头预演，但尚未完成自然语言创作闭环。
+在本地地址后加 `?artillery` 可打开「长坂 · 重炮试射」。将重炮卡拖到十字炮位，或选中卡牌后点击炮位，再点「出兵」。推荐先试中间靠上的炮位，完成一波后可点「重新开始」。
+
+独立试玩默认使用本地军师。大厅仍可输入构想、预演并确认开局，接入宿主或配置开发代理后也可使用 LLM。完整回归运行 `npm run build`、`npm run test` 和 `npx playwright test`。首次运行浏览器测试需安装 Chromium（`npx playwright install chromium`）。
+
+## 商业版战斗迭代
+
+- 点选塔卡再点地图，或直接从塔卡拖到地图松手建造。路径边缘的落点会吸附到附近可建的格子，右键或 Esc 取消。滚轮以指针为中心缩放，中键拖动平移。点已建塔打开索敌环；悬停升级按钮可查看新增射程和覆盖路段。
+- 默认用空格战术暂停，按 `1`、`2`、`3` 切换倍速。暂停时可建塔、升阶和改索敌。敌人进入最后 15% 路程时会触发边缘警示，并把快进降回 1 倍。悬停出怪口骷髅环可查看路线，点击可提前开波，剩余时间折算金币和后续建造冷却抵扣。
+- `npm run desktop` 打开 Electron 原生窗口，首次启动会下载 Electron 运行时。设置支持窗口与无边框全屏切换、分辨率、快捷键重绑，以及音乐、战斗音效和界面音效的独立音量。窗口分辨率受显示器可用工作区限制。Web 版设置调整棋盘渲染分辨率。 [Electron BrowserWindow 文档](https://www.electronjs.org/docs/latest/api/browser-window)
+- Windows 桌面版把设置、各关最高星级、累计击杀与图鉴解锁写入 `%APPDATA%\Tower Defense Demo\saves\tower-defense-profile-v1.json`，Steam Auto-Cloud 可使用相同相对路径。通关且基地满血为三星，至少剩半血为二星，其余通关为一星。
+
+关卡表位于 `src/content/packs/`。各塔的 `components.Attack` 定义初始等级，`levels` 从二级开始，`branch_upgrades` 在常规等级升满时解锁。距离单位为千分之一格，战斗频率为每秒 30 Tick。难度系数缩放敌方生命、移速、护甲和对基地伤害。`npm run dev` 时修改长坂坡 JSON 会先校验再重启当前长坂坡战斗，校验失败时继续使用上一份合法配置。
+
+用 `?debug&stress&notactical` 运行 150 敌、50 塔持续齐射场景。敌军到齐后，在开发者工具执行 `__td.metrics.reset()`，采样数秒后执行 `__td.metrics.read()`。结果分列模拟 Tick 耗时、主线程帧回调耗时和帧间隔，单位均为毫秒。桌面窗口与重启存档回归运行 `npm run build` 后执行 `npm run test:desktop`。
+
+本机 Chromium 以 1 倍速运行上述场景时，模拟 Tick、主线程帧回调和帧间隔的 p95 分别为 0.30 ms、2.30 ms 和 7.10 ms。
+
+### Windows 发行验收复测
+
+在可交互的 64 位 Windows 桌面运行 `npm run test:release`。脚本使用已安装的 Electron 和 Windows 自带的 .NET Framework C# 编译器，在独立测试存档中启动窗口。输入采样时窗口会短暂置顶，探针会在确认目标属于测试窗口后移动鼠标。用 `npm run test:release -- --skip-input` 只复测堆分配和帧时间。
+
+- 场景为 1 倍速，150 敌沿路径分散约 24 格，50 塔持续齐射，三种弹道、伤害跳字和音效启用。战术军师请求暂停，避免请求时机干扰战斗对照。
+- 预热后先进行 15 秒渲染进程 JS 堆采样，再关闭采样并独立计时 15 秒。报告分列 Tick、主线程帧回调和帧间隔。堆采样间隔为 128 字节，并纳入期间被回收的样本。该采样范围覆盖渲染器 JS 堆。 [Chromium 堆采样协议](https://chromedevtools.github.io/devtools-protocol/tot/HeapProfiler/)
+- Win32 探针各测 40 次鼠标选塔和 Escape 取消。计时从调用 `SendInput` 前开始，到 `GetPixel` 首次读到画面状态变化结束，报告包含像素轮询间隔。该区间覆盖 Windows 输入队列、游戏处理和桌面合成。物理开关、设备传输和显示器扫描需要外部设备测量。 [Win32 SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput) · [Win32 GetPixel](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getpixel)
+- 原始样本、环境参数和堆快照写入 `test-results/release-*/`。设置 `TD_SAMPLE_MS` 可更改两段采样的时长。用 `npm run test:release -- --profile-only --clustered` 复跑上一轮聚集场景的等时长堆采样。
+
+视觉打磨后的 7 秒 Windows 样本（i5-12500H、144 Hz）覆盖 1009 个帧间隔：模拟 Tick p95 为 0.40 ms，主线程帧回调 p95 为 2.30 ms，帧间隔 p95 为 7.10 ms，最长 7.20 ms。独立的 7 秒渲染器 JS 堆采样记录到约 0.87 MB 的分配。复测时设置 `TD_SAMPLE_MS=7000` 并使用 `--skip-input`，未采集输入延迟。
 
 ## 设计文档导航
 

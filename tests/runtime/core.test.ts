@@ -23,6 +23,27 @@ function runScript(seed: number, pack: ContentPack = DEFAULT_PACK, maxTicks = 20
 }
 
 describe('runtime D1', () => {
+  it('升塔只在布防期扣费，升级进入校验和并提高实际命中伤害', () => {
+    const initial = createBattle(DEFAULT_PACK, 1);
+    const placed = step(initial, [{ type: 'build', tower_id: 'crossbow', x: 1, y: 0 }]).state;
+    const { iid } = placed.towers[0];
+    const command = { type: 'upgrade', iid, fromLevel: 1 } as const;
+    const upgraded = step(placed, [command]);
+    expect(upgraded.events).toContainEqual({ type: 'upgrade_ok', iid, level: 2, cost: 27 });
+    expect(placed.towers[0].level).toBeUndefined();
+    expect(upgraded.state.gold).toBe(33);
+    expect(checksum(upgraded.state)).not.toBe(checksum({ ...upgraded.state, towers: step(placed).state.towers }));
+    expect(checksum(step(placed, [command]).state)).toBe(checksum(upgraded.state));
+    expect(step(placed, [command, command]).state.gold).toBe(33);
+    const poor = step(upgraded.state, [{ ...command, fromLevel: 2 }]);
+    expect(poor.events).toContainEqual({ type: 'upgrade_rejected', code: 'NOT_ENOUGH_GOLD' });
+    expect(poor.state.gold).toBe(33);
+    const wave = step(poor.state, [{ type: 'start_wave' }]).state;
+    const hit = step(wave, [command]);
+    expect(hit.events).toContainEqual({ type: 'upgrade_rejected', code: 'WAVE_ACTIVE' });
+    expect(hit.events).toContainEqual(expect.objectContaining({ type: 'damage_applied', amount: 20 }));
+  });
+
   it('1 同种子同指令 10 次校验和一致，且对局能结束', () => {
     const sums = new Set<string>();
     let last!: BattleState;

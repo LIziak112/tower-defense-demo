@@ -61,6 +61,9 @@ test('独立页 ?advisor=local：卡片出本地建议与押注；采纳只落 b
   expect(await page.evaluate(() => (window as any).__advisor.mode)).toBe('local');
   await expect(page.locator('#advisor .adv-opt')).not.toHaveCount(0);
   await expect(page.locator('#advisor .adv-bet')).toContainText('军师押');
+  const planB = card.locator('[data-option="b"] .adv-preview');
+  await planB.click();
+  await expect(planB).toHaveAttribute('aria-pressed', 'true');
 
   // 采纳 a：塔多了、钱少了、结果回灌成 outcome；叠层画在棋盘上不影响棋盘点击（这里只看状态）
   const before = await st(page);
@@ -85,6 +88,14 @@ test('独立页 ?advisor=local：卡片出本地建议与押注；采纳只落 b
   expect(v2.score.you + v2.score.advisor + v2.score.none).toBe(1);
   expect(typeof v2.betLine).toBe('string');
   await expect(page.locator('#advisor .adv-betline')).toContainText('军师押');
+  await expect(page.locator('.battle-briefing')).toContainText('赏金');
+  const tower = await page.evaluate(() => (window as any).__td.state.towers[0] as { cx: number; cy: number });
+  const board = (await page.locator('#board').boundingBox())!;
+  await page.mouse.click(board.x + (tower.cx + 0.5) * board.width / 12, board.y + (tower.cy + 0.5) * board.height / 9);
+  const beforeUpgrade = (await st(page)).gold;
+  await page.locator('#td-upgrade').click();
+  await expect(page.locator('.battle-briefing')).toContainText('Lv.2/6');
+  expect((await st(page)).gold).toBe(beforeUpgrade - 27);
   await expect(page.locator('#advisor .adv-gambit')).toBeVisible();
   const offer = v2.gambit.offer as { id: string } | null;
   expect(offer).not.toBeNull();
