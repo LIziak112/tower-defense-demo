@@ -82,60 +82,15 @@ export function skinForContext(ctx: HostContext): SkinSpec {
 }
 
 /** 皮肤规格 → 画布调色板（palettes.ts 的 Palette，带可选扩展字段） */
-
-function constrainHSL(hex: string, targetL: number, targetS: number): string {
-  const [r, g, b] = hexToRgb(hex).map(x => x / 255);
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h = 0, s = 0, l = (max + min) / 2;
-  const d = max - min;
-  if (d !== 0) {
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
-    else if (max === g) h = (b - r) / d + 2;
-    else h = (r - g) / d + 4;
-    h /= 6;
-  }
-  
-  // Apply constraints
-  const finalS = Math.max(0.10, Math.min(0.25, s * targetS)); // Ensure Saturation is 10%-25%
-  const finalL = targetL; // Force Lightness to target
-
-  const hue2rgb = (p: number, q: number, t: number) => {
-    if(t < 0) t += 1;
-    if(t > 1) t -= 1;
-    if(t < 1/6) return p + (q - p) * 6 * t;
-    if(t < 1/2) return q;
-    if(t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-    return p;
-  };
-  const q = finalL < 0.5 ? finalL * (1 + finalS) : finalL + finalS - finalL * finalS;
-  const p = 2 * finalL - q;
-  const R = hue2rgb(p, q, h + 1/3);
-  const G = hue2rgb(p, q, h);
-  const B = hue2rgb(p, q, h - 1/3);
-  return rgbToHex([R * 255, G * 255, B * 255]);
-}
-
 export function paletteForSkin(s: SkinSpec): Palette {
   const night = s.base === 'night';
-  
-  // 1. 色彩体系与明度层级控制：将地图底板与路径的 HSL 亮度控制在 10% 至 18%、饱和度控制在 10% 至 25%
-  // 路径与可建造区仅通过 6% 的明度差配合细微内描边区分
-  const bgPolished = constrainHSL(s.bg, 0.10, 1.0); // 10% lightness
-  const grid1Polished = constrainHSL(s.plot, 0.12, 1.0); // 12% lightness
-  const grid2Polished = constrainHSL(s.paving, 0.12, 1.0); // 12% lightness
-  const pathPolished = constrainHSL(s.road, 0.18, 1.0); // 18% lightness (6% diff)
-  const pathAltPolished = constrainHSL(s.road, 0.16, 1.0); // 16% lightness
-  
-  // 实体层冷暖阵营隔离：友方防御塔固定使用青蓝、翠绿等高辨识度冷色系（亮度 60% 至 75%）
-  // 敌方单位严格使用珊瑚红、品红与暗金等暖色系 -> (We'll enforce this in rendering)
-
+  // 道路色与地块色在宿主场景里本就相近（都是城市地面），棋盘上要能一眼看出敌人路径：把路面向墨色压 12% / 20%，色相不变
   return {
-    bg: bgPolished,
-    path: pathPolished,
-    pathAlt: pathAltPolished,
-    grid1: grid1Polished,
-    grid2: grid2Polished,
+    bg: s.bg,
+    path: mix(s.road, s.ink, 0.12),
+    pathAlt: mix(s.road, s.ink, 0.2),
+    grid1: s.plot,
+    grid2: s.paving,
     base: s.accent,
     shot: night ? mix(s.accent, '#ffffff', 0.25) : s.accent,
     text: s.ink,
