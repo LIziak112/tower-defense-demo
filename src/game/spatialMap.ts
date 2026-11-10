@@ -9,6 +9,7 @@ import { reachTable, slotCell } from '../advisor/snapshot';
 import type { AdvisorView } from '../advisor/session';
 import type { Palette } from './palettes';
 import { getCulturalLexicon } from './culturalThemes';
+import { parseWorldMap, type HostWorldMap } from './worldField';
 
 export interface HostSpatialNode {
   key: string;
@@ -78,6 +79,8 @@ export interface HostSpatialMap {
   ambientTrafficCleared?: boolean;
   landmarks: HostSpatialNode[];
   nodes: HostSpatialNode[];
+  /** 场景的真实几何（世界坐标：道路中心线、建筑占位、水域）。有它就走世界模式：战场长在地图上，不再是屏幕浮层（大厅 #27514） */
+  world?: HostWorldMap | null;
 }
 
 export interface TacticalSlot {
@@ -203,6 +206,8 @@ export function parseSpatialMap(raw: unknown, prev: HostSpatialMap | null = null
     ...(typeof m.ambientTrafficCleared === 'boolean' ? { ambientTrafficCleared: m.ambientTrafficCleared } : {}),
     landmarks,
     nodes,
+    // world 整块替换（不做字段级合并）：消息里没带就沿用上一次的，带了但不合法就是没有
+    world: 'world' in m ? parseWorldMap(m.world) : (prev?.world ?? null),
   };
 }
 

@@ -1,5 +1,5 @@
 // Minimal headless dry-run (Demo §5.4): "no towers" and "greedy" bots. Deterministic, no rendering.
-import { createBattle, step } from '../runtime/index';
+import { createBattle, step, milliOf, pathSamples } from '../runtime/index';
 import type { BattleState, Command, ContentPack } from '../runtime/types';
 import type { VWarning } from './validate';
 
@@ -7,14 +7,12 @@ export interface DryRunResult { bot: 'no_towers' | 'poor_placement' | 'greedy'; 
 
 function bestCells(pack: ContentPack, range: number): { x: number; y: number }[] {
   // score = number of path sample points within range of the cell centre
-  const pts: [number, number][] = [];
-  for (let i = 1; i < pack.map.path.length; i++) {
-    const a = pack.map.path[i - 1], b = pack.map.path[i];
-    const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y); let x = a.x, y = a.y;
-    while (x !== b.x || y !== b.y) { pts.push([x * 1000 + 500, y * 1000 + 500]); x += dx; y += dy; }
-  }
+  // 每 1 格一个采样点、不含终点（与旧的逐格展开同一组点）；自由几何下沿真实折线采样
+  const pts: [number, number][] = pathSamples(pack.map.path).slice(0, -1).map((p) => [p.x, p.y]);
+  // 多分支：分支路线上的采样点同样计分（没有分支的内容包结果不变）
+  for (const bp of pack.map.branch_paths ?? []) for (const p of pathSamples(bp).slice(0, -1)) pts.push([p.x, p.y]);
   return pack.map.buildable_cells
-    .map((c) => ({ c, s: pts.filter(([px, py]) => (px - c.x * 1000 - 500) ** 2 + (py - c.y * 1000 - 500) ** 2 <= range * range).length }))
+    .map((c) => ({ c, s: pts.filter(([px, py]) => (px - milliOf(c.x)) ** 2 + (py - milliOf(c.y)) ** 2 <= range * range).length }))
     .sort((a, b) => b.s - a.s || a.c.y - b.c.y || a.c.x - b.c.x).map((v) => v.c);
 }
 

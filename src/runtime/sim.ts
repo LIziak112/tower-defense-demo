@@ -11,11 +11,19 @@ export const CELL = 1000; // milli-cell
 
 const key = (x: number, y: number) => `${x},${y}`;
 
+/** 格坐标 → 毫格（格心 = c*1000+500）。自由几何下坐标可带小数：先取整到毫格，保证跨平台逐位确定。 */
+export const milliOf = (c: number): number => Math.round(c * CELL) + 500;
+
+/** 一段路径的毫格长度：轴对齐段 = |Δ|（与经典整数格逐位一致）；斜段 = round(√(Δx²+Δy²))（整数入参，sqrt 是 IEEE 精确舍入）。 */
+function segSpan(a: Cell, b: Cell): { dx: number; dy: number; len: number; axis: boolean } {
+  const dx = Math.round((b.x - a.x) * CELL), dy = Math.round((b.y - a.y) * CELL);
+  const axis = dx === 0 || dy === 0;
+  return { dx, dy, axis, len: axis ? Math.abs(dx) + Math.abs(dy) : Math.round(Math.sqrt(dx * dx + dy * dy)) };
+}
+
 export function pathLength(path: Cell[]): number {
   let len = 0;
-  for (let i = 1; i < path.length; i++) {
-    len += (Math.abs(path[i].x - path[i - 1].x) + Math.abs(path[i].y - path[i - 1].y)) * CELL;
-  }
+  for (let i = 1; i < path.length; i++) len += segSpan(path[i - 1], path[i]).len;
   return len;
 }
 
@@ -23,16 +31,28 @@ export function pathLength(path: Cell[]): number {
 export function positionAt(path: Cell[], progress: number): { x: number; y: number } {
   let left = progress;
   for (let i = 1; i < path.length; i++) {
-    const a = path[i - 1], b = path[i];
-    const seg = (Math.abs(b.x - a.x) + Math.abs(b.y - a.y)) * CELL;
-    if (left <= seg) {
-      const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
-      return { x: a.x * CELL + 500 + dx * left, y: a.y * CELL + 500 + dy * left };
+    const a = path[i - 1];
+    const sp = segSpan(a, path[i]);
+    if (left <= sp.len) {
+      if (sp.axis) return { x: milliOf(a.x) + Math.sign(sp.dx) * left, y: milliOf(a.y) + Math.sign(sp.dy) * left };
+      return { x: milliOf(a.x) + Math.round((sp.dx * left) / sp.len), y: milliOf(a.y) + Math.round((sp.dy * left) / sp.len) };
     }
-    left -= seg;
+    left -= sp.len;
   }
   const end = path[path.length - 1];
-  return { x: end.x * CELL + 500, y: end.y * CELL + 500 };
+  return { x: milliOf(end.x), y: milliOf(end.y) };
+}
+
+/**
+ * 沿路径每 1 格取一个采样点（毫格）。经典整数格路径 = 全部路径格的格心（与旧的逐格展开一致）；
+ * 自由几何下不能逐格展开（坐标带小数会走不到终点），军师覆盖表 / 预演 / 绘制统一用它。
+ */
+export function pathSamples(path: Cell[]): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  if (!path.length) return out;
+  const len = pathLength(path);
+  for (let p = 0; p <= len; p += CELL) out.push(positionAt(path, p));
+  return out;
 }
 
 export function pathForBranch(pack: ContentPack, branch = 0): Cell[] {
@@ -185,7 +205,8 @@ function applyBuild(s: BattleState, c: Extract<Command, { type: 'build' }>, ev: 
     ev.push({ type: 'build_rejected', code, message, tower_id: c.tower_id, x: c.x, y: c.y });
   const def = s.pack.towers.find((t) => t.id === c.tower_id);
   if (!def) return reject('UNKNOWN_TOWER', `没有名为 ${c.tower_id} 的塔`);
-  if (!Number.isInteger(c.x) || !Number.isInteger(c.y)) return reject('BAD_CELL', '坐标必须是整数格');
+  if (!s.pack.map.free && (!Number.isInteger(c.x) || !Number.isInteger(c.y))) return reject('BAD_CELL', '坐标必须是整数格');
+  if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) return reject('BAD_CELL', '坐标不合法');
   if (!s.pack.map.buildable_cells.some((b) => b.x === c.x && b.y === c.y)) return reject('NOT_BUILDABLE', '这里不能建塔');
   if (s.occupied.includes(key(c.x, c.y))) return reject('OCCUPIED', '这格已经有塔了');
   if (s.gold < def.cost) return reject('NOT_ENOUGH_GOLD', `CP 不足（需要 ${def.cost} CP，现有 ${s.gold} CP）`);
@@ -193,7 +214,7 @@ function applyBuild(s: BattleState, c: Extract<Command, { type: 'build' }>, ev: 
   s.occupied.push(key(c.x, c.y));
   const t: TowerInst = {
     iid: s.next_iid++, def: def.id, cx: c.x, cy: c.y,
-    x: c.x * CELL + 500, y: c.y * CELL + 500, cooldown: 0, life: 'pending',
+    x: milliOf(c.x), y: milliOf(c.y), cooldown: 0, life: 'pending',
   };
   s.towers.push(t);
   ev.push({ type: 'build_ok', iid: t.iid, tower_id: def.id, x: c.x, y: c.y, cost: def.cost });
@@ -227,8 +248,9 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
         const pLen = pathLength(targetPath);
         const prog = Math.round(pLen * 0.48);
         const midPt = positionAt(targetPath, prog);
-        const cx = c.x !== undefined ? c.x : Math.floor(midPt.x / CELL);
-        const cy = c.y !== undefined ? c.y : Math.floor(midPt.y / CELL);
+        // 自由几何：弹坑就在路线上的那一点（不取整到格）；经典格：所在格
+        const cx = c.x !== undefined ? c.x : pack.map.free ? (midPt.x - 500) / CELL : Math.floor(midPt.x / CELL);
+        const cy = c.y !== undefined ? c.y : pack.map.free ? (midPt.y - 500) / CELL : Math.floor(midPt.y / CELL);
         s.gold -= cost;
         if (!s.craters) s.craters = [];
         s.craters.push({
@@ -245,7 +267,7 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
         }
         // 对炸点附近的敌军造成爆破冲击伤害与进度击退
         let damaged = 0;
-        const bx = cx * CELL + 500, by = cy * CELL + 500;
+        const bx = milliOf(cx), by = milliOf(cy);
         for (const e of s.enemies) {
           if (e.life !== 'alive') continue;
           const dist = Math.hypot(e.x - bx, e.y - by);
@@ -281,7 +303,7 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
           createdAtTick: s.tick,
         });
         let damaged = 0;
-        const bx = cx * CELL + 500, by = cy * CELL + 500;
+        const bx = milliOf(cx), by = milliOf(cy);
         for (const e of s.enemies) {
           if (e.life !== 'alive') continue;
           if (Math.hypot(e.x - bx, e.y - by) <= 3800) {

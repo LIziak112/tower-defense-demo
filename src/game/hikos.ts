@@ -2,12 +2,17 @@
 // 游戏被宿主用 sandbox="allow-scripts" 的 iframe 嵌在 /arcade/tower-defense/：不透明源，没有 localStorage / cookie，所有状态只放内存。
 // 宿主 → 游戏：首帧前走 URL query（v skin accent bg ink theme lang），运行中走 hikos:context / hikos:visibility / hikos:size / hikos:map / hikos:settle:reply。
 // 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h} · td:settle:request {…} · td:battle {…}。
+// 世界模式（大厅 #27514，docs/hikos-world-protocol.md）：hikos:context / hikos:map 的 map.world 带场景真实几何（世界坐标），
+//   宿主每帧推 hikos:camera {seq, w, h, m[16], ppu, azimuth, pitch, zoom}；游戏回 td:field（战场）/ td:frame（每 tick 状态）/ td:camera（把画布上的手势交还给地图相机）；
+//   宿主收到 td:field 后回 hikos:ground {field, pads[], routes[][]}（按场景地形量出的真实高度，游戏拿去做拾取与跳字投影）。
 // 军师（任务 fb4d93bc，06 规格 §3）：游戏 → 宿主 td:advisor:request {reqId, kind, deadlineMs, stateVersion, snapshot, llm}；
 //   宿主 → 游戏 hikos:advisor:reply {reqId, ok, payload | error, provider, latencyMs}；hikos:context 可多带 advisor {enabled, provider}（只增不改）。
 //   宿主拿自己的凭据与路由去调模型；游戏只送极简决策快照与提示词，不碰端点与密钥。
 
 import { parseSpatialMap, type HostSpatialMap, type HostSpatialNode, type RoadPlan, type RoadSegment } from './spatialMap';
+import { parseCamera, parseGround, type HostCamera, type HostGround } from './worldMode';
 export { parseSpatialMap, type HostSpatialMap, type HostSpatialNode, type RoadPlan, type RoadSegment };
+export { parseCamera, parseGround, type HostCamera, type HostGround };
 
 export const PROTOCOL = 1;
 
@@ -198,6 +203,10 @@ export interface HostMessageHandlers {
   onSize?: (w: number, h: number) => void;
   /** 宿主空间皮肤地图场景坐标更新（hikos:map 或 hikos:context.map） */
   onMap?: (map: HostSpatialMap) => void;
+  /** 宿主地图相机变了（hikos:camera）：世界坐标 → 舞台像素的矩阵，与宿主画这一帧用的是同一个 */
+  onCamera?: (camera: HostCamera) => void;
+  /** 宿主按场景地形量出的战场真实高度（hikos:ground，对 td:field 的回执） */
+  onGround?: (ground: HostGround) => void;
   /** 宿主代发军师回来的回包（hikos:advisor:reply）；配对与校验在 src/advisor/session.ts */
   onAdvisorReply?: (msg: Record<string, unknown>) => void;
   /** 宿主代发军师的 SSE 流式增量（hikos:advisor:stream） */
@@ -252,6 +261,12 @@ export function createHostBridge(win: Window, handlers: HostMessageHandlers = {}
         bridge.context = context;
         handlers.onMap?.(nextMap);
       }
+    } else if (m.type === 'hikos:camera') {
+      const cam = parseCamera(m);
+      if (cam) handlers.onCamera?.(cam);
+    } else if (m.type === 'hikos:ground') {
+      const ground = parseGround(m);
+      if (ground) handlers.onGround?.(ground);
     } else if (m.type === 'hikos:visibility') {
       handlers.onVisibility?.(!!(m as { visible?: unknown }).visible);
     } else if (m.type === 'hikos:size') {
