@@ -24,12 +24,20 @@ export interface WaveDef { id: string; groups: WaveGroup[] }
 export interface MapDef {
   width: number;
   height: number;
-  path: Cell[]; // primary waypoints (cell coords), axis-aligned adjacent segments
+  path: Cell[]; // primary waypoints (cell coords), axis-aligned adjacent segments (free === true: any direction, fractional)
   /** 多分支并行进军路径（可选；branch 0 = path，branch 1..k = branch_paths[0..k-1]） */
   branch_paths?: Cell[][];
   buildable_cells: Cell[];
   base_hp: number;
   starting_gold: number;
+  /**
+   * 自由几何（大厅 #27514）：路线是地图真实道路的中心线折线、塔位是路边真实空地，
+   * path / branch_paths / buildable_cells 的坐标可以带小数（≤3 位）、线段可以是任意方向。
+   * 不设置 = 经典整数格（轴对齐），模拟结果与以前逐位一致。
+   */
+  free?: boolean;
+  /** 只用于呈现：逻辑格 ↔ 宿主地图世界坐标（世界 x = ox + 毫格/1000 × unit，z 同理）；不进模拟、不进 checksum */
+  world?: { unit: number; ox: number; oz: number };
 }
 export interface ContentPack {
   meta: { theme: string; description: string };
