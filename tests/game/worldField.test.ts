@@ -1,7 +1,8 @@
 // 世界坐标战场（大厅 #27514）：路线必须走宿主地图的真实道路、塔位必须在路边真实空地上，模拟跑在同一份几何上。
 import { describe, expect, it } from 'vitest';
-import { buildRoadGraph, buildWorldField, packForField, parseWorldMap, routePoint, milliToWorld, type HostWorldMap } from '../../src/game/worldField';
-import { generateCampaignPack } from '../../src/game/culturalThemes';
+import { readFileSync } from 'node:fs';
+import { buildRoadGraph, buildWorldField, packForField, parseWorldMap, routePoint, milliToWorld, SEG_APPROACH, type HostWorldMap } from '../../src/game/worldField';
+import { generateCampaignPack, localizePackForSkin } from '../../src/game/culturalThemes';
 import { createBattle, step, pathLength, positionAt, checksum, CELL, milliOf } from '../../src/runtime/index';
 import { dryRun } from '../../src/content/dryrun';
 import { reachTable } from '../../src/advisor/snapshot';
@@ -178,5 +179,117 @@ describe('parseWorldMap：宿主输入不可信', () => {
     expect(m.roads[0].pts.length).toBe(2);
     expect(m.places.length).toBe(0);
     expect(m.blocks).toEqual([[1, 1, 2]]);
+  });
+});
+
+
+// —— 四款开放皮肤的真实几何：从宿主真实入口页 KMU.spatial.current().battle.map() 原样导出（krowworker web/hikos，大厅 #27514），
+//    不是手写的近似。路线必须从真实建筑出发、沿真实路面走到母星门口，不走回头路；塔位落在路边真实空地上。
+const REAL = ['union-atlas-3d', 'metropolis-riverside-3d', 'gothic-cathedral-3d', 'harbor-district-3d'] as const;
+const loadReal = (skin: string): HostWorldMap => parseWorldMap(JSON.parse(readFileSync(new URL(`../fixtures/world/${skin}.world.json`, import.meta.url), 'utf8')))!;
+const segDist = (px: number, pz: number, ax: number, az: number, bx: number, bz: number): number => {
+  const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+  const t = l2 > 1e-12 ? Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)) : 0;
+  return Math.hypot(px - ax - dx * t, pz - az - dz * t);
+};
+
+describe.each(REAL)('真实地图 %s', (skin) => {
+  const world = loadReal(skin);
+  const packOf = (lv: number) => localizePackForSkin(generateCampaignPack(lv, skin, 'zh'), skin, 'zh');
+  const fieldOf = (lv: number) => buildWorldField(world, { pathCells: pathLength(packOf(lv).map.path) / CELL, level: lv })!;
+
+  it('宿主导出的几何过得了校验：有路、有母星、有建筑', () => {
+    expect(world.roads.length).toBeGreaterThan(3);
+    expect(world.places.filter((p) => p.kind === 'home')).toHaveLength(1);
+    expect(world.places.length).toBeGreaterThan(4);
+  });
+
+  it('前 6 关都排得出战场：起点是真实建筑，终点是母星', () => {
+    const home = world.places.find((p) => p.kind === 'home')!;
+    for (let lv = 1; lv <= 6; lv++) {
+      const f = fieldOf(lv);
+      expect(f, `lv${lv}`).not.toBeNull();
+      expect(f.spawn.key, `lv${lv} 起点`).not.toBeNull();
+      expect(world.places.some((p) => p.key === f.spawn.key && p.kind !== 'home')).toBe(true);
+      expect(f.base.key).toBe(home.key);
+      // 终点落在母星占位圆上（门口），不钻进建筑里
+      expect(Math.hypot(f.base.x - home.x, f.base.z - home.z)).toBeGreaterThan(home.r - 0.4);
+      expect(Math.hypot(f.base.x - home.x, f.base.z - home.z)).toBeLessThan(home.r + 1.2);
+      expect(f.unit).toBe(5);
+      expect(f.paceK).toBeGreaterThan(0.55);
+      expect(f.pads.length, `lv${lv} 塔位`).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it('路线每一点都在真实路面上（门口引道除外），而且不走回头路', () => {
+    for (let lv = 1; lv <= 4; lv++) {
+      const f = fieldOf(lv);
+      for (const rt of f.routes) {
+        expect(rt.pts.length).toBe(rt.wd.length);
+        expect(rt.pts.length).toBe(rt.fl.length);
+        for (let s = 0; s <= rt.len; s += 1.5) {
+          const q = routePoint(rt, s);
+          if (q.approach) continue;
+          let best = Infinity;
+          for (const r of world.roads) for (let i = 1; i < r.pts.length; i++) best = Math.min(best, segDist(q.x, q.z, r.pts[i - 1][0], r.pts[i - 1][2], r.pts[i][0], r.pts[i][2]) - r.w / 2);
+          expect(best, `${skin} lv${lv} s=${s} (${q.x.toFixed(1)}, ${q.z.toFixed(1)})`).toBeLessThanOrEqual(0.35);
+        }
+        // 不走回头路：相隔 3 个单位以上的两个采样点不会重合
+        const samples: [number, number][] = [];
+        for (let s = 0; s <= rt.len; s += 2) { const q = routePoint(rt, s); samples.push([q.x, q.z]); }
+        for (let i = 0; i < samples.length; i++) for (let j = i + 3; j < samples.length; j++) {
+          expect(Math.hypot(samples[i][0] - samples[j][0], samples[i][1] - samples[j][1]), `${skin} lv${lv} 第 ${i} / ${j} 个采样点重合`).toBeGreaterThan(0.6);
+        }
+      }
+    }
+  });
+
+  it('门口引道不穿过别的建筑和装饰', () => {
+    for (let lv = 1; lv <= 4; lv++) {
+      const f = fieldOf(lv);
+      for (const rt of f.routes) for (let i = 1; i < rt.pts.length; i++) {
+        if (!(rt.fl[i - 1] & SEG_APPROACH)) continue;
+        const a = rt.pts[i - 1], b = rt.pts[i];
+        for (const p of world.places) {
+          if (p.key === f.spawn.key || p.key === f.spawn2?.key || p.key === f.base.key) continue;
+          expect(segDist(p.x, p.z, a[0], a[2], b[0], b[2]), `${skin} lv${lv} 引道压到 ${p.label}`).toBeGreaterThan(p.r);
+        }
+        for (const c of world.blocks) expect(segDist(c[0], c[1], a[0], a[2], b[0], b[2]), `${skin} lv${lv} 引道压到装饰 (${c[0]}, ${c[1]})`).toBeGreaterThan(c[2]);
+      }
+    }
+  });
+
+  it('塔位在真实空地上：不压路面、建筑、装饰、水，港湾只落在甲板上；浮桥旁边不放塔', () => {
+    for (let lv = 1; lv <= 4; lv++) {
+      const f = fieldOf(lv);
+      for (const p of f.pads) {
+        for (const r of world.roads) {
+          if (r.virtual) continue;
+          for (let i = 1; i < r.pts.length; i++) expect(segDist(p.x, p.z, r.pts[i - 1][0], r.pts[i - 1][2], r.pts[i][0], r.pts[i][2]), `${skin} lv${lv} 塔位压路 ${r.id}`).toBeGreaterThanOrEqual(r.w / 2 + f.padR);
+        }
+        for (const q of world.places) expect(Math.hypot(p.x - q.x, p.z - q.z), `${skin} lv${lv} 塔位压建筑 ${q.label}`).toBeGreaterThanOrEqual(q.r + f.padR);
+        for (const c of world.blocks) expect(Math.hypot(p.x - c[0], p.z - c[1])).toBeGreaterThanOrEqual(c[2] + f.padR - 1e-6);
+        for (const w of world.water) for (let i = 1; i < w.pts.length; i++) expect(segDist(p.x, p.z, w.pts[i - 1][0], w.pts[i - 1][1], w.pts[i][0], w.pts[i][1])).toBeGreaterThanOrEqual(w.w / 2 + f.padR - 1e-6);
+        if (world.land) expect(world.land.some((q) => p.x >= q[0] + f.padR && p.x <= q[2] - f.padR && p.z >= q[1] + f.padR && p.z <= q[3] - f.padR), `${skin} lv${lv} 塔位落水`).toBe(true);
+      }
+      // 塔位两两不重叠
+      for (let i = 0; i < f.pads.length; i++) for (let j = i + 1; j < f.pads.length; j++) expect(Math.hypot(f.pads[i].x - f.pads[j].x, f.pads[i].z - f.pads[j].z)).toBeGreaterThan(2 * f.padR);
+    }
+  });
+
+  it('确定性：同一张地图同一关，战场指纹相同', () => {
+    expect(fieldOf(2).id).toBe(fieldOf(2).id);
+    expect(JSON.stringify(fieldOf(3).map)).toBe(JSON.stringify(fieldOf(3).map));
+  });
+
+  it('难度可玩：一座塔不放守不住，贪心放塔能赢（前 6 关）；行军时间与原设计相当', () => {
+    for (let lv = 1; lv <= 6; lv++) {
+      const p = packOf(lv), f = fieldOf(lv), wp = packForField(p, f);
+      expect(dryRun(wp, 'no_towers').result, `${skin} lv${lv} 空防`).toBe('lost');
+      expect(dryRun(wp, 'greedy').result, `${skin} lv${lv} 贪心`).toBe('won');
+      const tpl = pathLength(p.map.path) / p.enemies[0].speed, real = pathLength(wp.map.path) / wp.enemies[0].speed;
+      expect(real / tpl, `${skin} lv${lv} 行军时间`).toBeGreaterThan(0.85);
+      expect(real / tpl).toBeLessThan(1.2);
+    }
   });
 });
