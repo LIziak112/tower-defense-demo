@@ -18,7 +18,7 @@ import { validatePack } from '../../src/content/validate';
 import { balanceWarnings, dryRun } from '../../src/content/dryrun';
 import { adviseLocal } from '../../src/advisor/local';
 import { advicePrompt } from '../../src/advisor/prompt';
-import { createBattle } from '../../src/runtime/sim';
+import { computeFormationSynergies, createBattle, step } from '../../src/runtime/sim';
 import { buildSnapshot, slotCell } from '../../src/advisor/snapshot';
 import { parseAdvice } from '../../src/advisor/types';
 import { DEFAULT_PACK } from '../../src/content/default';
@@ -373,7 +373,7 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
         outcome: 'won',
         deltaCp: 10,
         appliedCp: 10,
-        balanceCp: 1010,
+        balanceCp: 921857066,
         netCp: 10,
         wonCount: 1,
         lostCount: 0,
@@ -382,8 +382,8 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
     } as unknown as MessageEvent);
 
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toMatchObject({ matchId: 'm-win-1', ok: true, outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 1010, idempotent: false });
-    expect(bridge.context.wallet).toEqual({ balanceCp: 1010, netCp: 10, wonCount: 1, lostCount: 0 });
+    expect(replies[0]).toMatchObject({ matchId: 'm-win-1', ok: true, outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 921857066, idempotent: false });
+    expect(bridge.context.wallet).toEqual({ balanceCp: 921857066, netCp: 10, wonCount: 1, lostCount: 0 });
   });
 
   it('大厅 #26153 ①②③：四款皮肤世界观文化词表、专属弹道/动效规格、参谋敕令三选一、兵种克制与危机挑战词缀', () => {
@@ -487,5 +487,33 @@ describe('空间皮肤地图原位投影（任务 94bbcebe：外部坐标与等�
       expect(m.garrisonDefender.nameZh.length).toBeGreaterThan(2);
       expect(m.license).toContain('CC0');
     }
+
+    // 大厅 #26913 / #26911：全路线前中后段均衡炮位、多分支进军、三元共鸣阵、道路爆破改道与建筑推倒恢复
+    expect(gothicProj.slotDistribution.frontCount).toBeGreaterThanOrEqual(4);
+    expect(gothicProj.slotDistribution.midCount).toBeGreaterThanOrEqual(4);
+    expect(gothicProj.slotDistribution.rearCount).toBeGreaterThanOrEqual(4);
+    expect(gothicProj.branchWaypoints.length).toBeGreaterThanOrEqual(4);
+
+    // 验证三元共鸣阵（Trinity Resonance：破盾+压制+破甲 3 种异构塔在 3.6 格内协同，伤害 ×1.35、射程 ×1.15）
+    const syn = computeFormationSynergies([
+      { iid: 1, def: 'crossbow', cx: 3, cy: 2, x: 3500, y: 2500, cooldown: 0, life: 'alive' },
+      { iid: 2, def: 'fire_brazier', cx: 4, cy: 2, x: 4500, y: 2500, cooldown: 0, life: 'alive' },
+      { iid: 3, def: 'catapult', cx: 3, cy: 3, x: 3500, y: 3500, cooldown: 0, life: 'alive' },
+    ]);
+    expect(syn.get(1)?.kind).toBe('trinity');
+    expect(syn.get(1)?.damageMul).toBe(1.35);
+    expect(syn.get(1)?.rangeMul).toBe(1.15);
+
+    // 验证道路爆破（blast_road）与建筑推倒（demolish_building）
+    let bState = createBattle(p1, 99);
+    const blastRes = step(bState, [{ type: 'blast_road', branch: 1 }]);
+    bState = blastRes.state;
+    expect(bState.craters).toHaveLength(1);
+    expect(blastRes.events.some((e) => e.type === 'road_blasted')).toBe(true);
+
+    const demRes = step(bState, [{ type: 'demolish_building', key: 'bldg-factory', label: '西翼厂房', x: 5, y: 3 }]);
+    bState = demRes.state;
+    expect(bState.demolished).toHaveLength(1);
+    expect(demRes.events.some((e) => e.type === 'building_demolished')).toBe(true);
   });
 });

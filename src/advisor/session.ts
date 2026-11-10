@@ -3,13 +3,21 @@
 // 采纳只产出 build 命令，交给 sim.ts 的 applyBuild 走与玩家点击完全相同的校验（06 §3「同一条 deploy 校验」）；结果事件回灌成 outcome。
 import type { BattleState, Command, GameEvent, GambitId, GambitTaken } from '../runtime/types';
 import { isGambitId } from '../runtime/gambit';
-import { adviseLocal, LOCAL_ADVISOR_NAME } from './local';
+import { adviseLocal, LOCAL_ADVISOR_NAME, simulateWave } from './local';
 import { advicePrompt } from './prompt';
 import { buildSnapshot, slotCell } from './snapshot';
 import { LIMITS, parseAdvice, type Advice, type AdviceKind, type AdvisorAgent, type AdvisorChannel, type AdvisorReply, type AdvisorRequest, type AdvisorStreamEvent, type Reject, type Snapshot } from './types';
 
 export type Lang = 'zh' | 'en';
 export type Source = 'llm' | 'local';
+
+export interface OptionSimPreview {
+  optionId: string;
+  leaks: number;
+  result: 'cleared' | 'lost' | 'timeout';
+  costCp: number;
+  slots: number[];
+}
 
 export interface Presented {
   reqId: string;
@@ -24,9 +32,11 @@ export interface Presented {
   atTick: number;
   wave: number;
   adopted: string[];
+  /** 每条方案的沙盘实兵推演结果（预计漏怪数、花费 CP、落点槽位） */
+  simPreviews?: OptionSimPreview[];
 }
 export interface Outcome { option: string; slot: number; tower: string; ok: boolean; code: string | null; message: string | null; tick: number }
-export interface BetRecord { wave: number; predicted: number; actual: number; result: 'you' | 'advisor' | 'none'; source: Source }
+export interface BetRecord { wave: number; predicted: number; actual: number; result: 'you' | 'advisor' | 'none'; source: Source; bountyCp?: number }
 export interface LogEntry { t: number; tick: number; ev: 'req' | 'reply' | 'drop' | 'present' | 'adopt' | 'outcome' | 'bet' | 'gambit' | 'timeout' | 'error'; reqId?: string; kind?: string; code?: string; detail?: string }
 
 export interface AdvisorView {
@@ -62,10 +72,10 @@ interface Inflight { reqId: string; kind: Exclude<AdviceKind, 'level'>; stateVer
 
 const STR = {
   zh: { thinking: '军师思考中…', late: '军师迟到，这条不等了。', timeoutLocal: '军师迟到，先用本地建议。', offline: '军师没回音，先用本地建议。', badShape: '军师的话不成句，先用本地建议。', stale: '军师的建议过期了，丢弃。', noTransport: '未接军师，用本地建议。', superseded: '战局已变，上一条建议作废。',
-    betYou: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只——你赢了军师！`, betAdvisor: (p: number) => `军师押漏 ${p} 只，分毫不差。`, betNone: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只，比军师想的还糟。`,
+    betYou: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只——你赢了军师！（防线悬赏 +25 CP）`, betAdvisor: (p: number) => `军师押漏 ${p} 只，分毫不差。（推演契合奖励 +15 CP）`, betNone: (p: number, a: number) => `军师押漏 ${p} 只，实际漏 ${a} 只，比军师想的还糟。`,
     outcomeOk: (t: string, s: number) => `已按军师献策在第 ${s} 号阵位布设「${t}」。`, outcomeBad: (s: number, m: string) => `第 ${s} 号阵位未能布设：${m}` },
   en: { thinking: 'Advisor thinking…', late: 'Advisor is late; skipping this one.', timeoutLocal: 'Advisor is late; using local advice.', offline: 'No reply from advisor; using local advice.', badShape: 'Advisor reply was malformed; using local advice.', stale: 'Advisor reply is stale; dropped.', noTransport: 'No advisor connected; local advice.', superseded: 'The battle moved on; last advice withdrawn.',
-    betYou: (p: number, a: number) => `Advisor bet ${p} leaks, you leaked ${a}—you beat the advisor!`, betAdvisor: (p: number) => `Advisor bet ${p} leaks. Called it.`, betNone: (p: number, a: number) => `Advisor bet ${p} leaks, actual ${a}: worse than feared.`,
+    betYou: (p: number, a: number) => `Advisor bet ${p} leaks, you leaked ${a}—you beat the advisor! (+25 CP Bounty)`, betAdvisor: (p: number) => `Advisor bet ${p} leaks. Called it. (+15 CP Match Grant)`, betNone: (p: number, a: number) => `Advisor bet ${p} leaks, actual ${a}: worse than feared.`,
     outcomeOk: (t: string, s: number) => `Placed ${t} at slot ${s} as advised.`, outcomeBad: (s: number, m: string) => `Slot ${s} failed: ${m}` },
 } as const;
 
@@ -328,7 +338,18 @@ export class AdvisorSession {
 
   private present(req: Inflight, advice: Advice, source: Source, provider: string | null, latencyMs: number | null, rejects: Reject[], reason: string | null) {
     const state = this.state!;
-    this.current = { reqId: req.reqId, kind: req.kind, advice, source, provider: source === 'local' ? LOCAL_ADVISOR_NAME[this.lang] : provider, latencyMs, reason, rejects, atTick: state.tick, wave: state.wave_index, adopted: [] };
+    const simPreviews: OptionSimPreview[] = advice.options.map((opt) => {
+      const sim = state.phase === 'build' ? simulateWave(state, opt.moves, 2400) : { leaks: 0, result: 'cleared' as const };
+      const costCp = opt.moves.reduce((acc, m) => acc + (state.pack.towers.find((t) => t.id === m.tower)?.cost ?? 60), 0);
+      return {
+        optionId: opt.id,
+        leaks: sim.leaks,
+        result: sim.result,
+        costCp,
+        slots: opt.moves.map((m) => m.slot),
+      };
+    });
+    this.current = { reqId: req.reqId, kind: req.kind, advice, source, provider: source === 'local' ? LOCAL_ADVISOR_NAME[this.lang] : provider, latencyMs, reason, rejects, atTick: state.tick, wave: state.wave_index, adopted: [], simPreviews };
     this.status = 'ready';
     if (source === 'llm') this.notice = null;
     this.push('present', { reqId: req.reqId, kind: req.kind, code: source === 'llm' ? 'LLM' : `LOCAL:${reason ?? ''}`, detail: `${advice.options.length} options, ${rejects.length} rejects` });
@@ -367,18 +388,22 @@ export class AdvisorSession {
     return { type: 'gambit', id: gid };
   }
 
-  // ---------------------------------------------------------------- 押注结算（玩法增强 ①）
+  // ---------------------------------------------------------------- 押注结算（玩法增强 ① + #26913 ⑥ 实质战果悬赏）
   private settleBet(state: BattleState) {
     const ws = this.waveStart!;
     this.waveStart = null;
     if (!ws.bet) return;
     const actual = state.leaks - ws.leaks, predicted = ws.bet.leaks;
     const result: BetRecord['result'] = actual < predicted ? 'you' : actual === predicted ? 'advisor' : 'none';
-    this.bets.push({ wave: ws.wave, predicted, actual, result, source: ws.source });
+    const bountyCp = result === 'you' ? 25 : result === 'advisor' ? 15 : 0;
+    this.bets.push({ wave: ws.wave, predicted, actual, result, source: ws.source, bountyCp });
     this.score[result]++;
     const s = STR[this.lang];
     this.betLine = result === 'you' ? s.betYou(predicted, actual) : result === 'advisor' ? s.betAdvisor(predicted) : s.betNone(predicted, actual);
-    this.push('bet', { code: result, detail: `wave ${ws.wave}: predicted ${predicted}, actual ${actual}` });
+    if (bountyCp > 0 && state.pack.map.branch_paths && state.pack.map.branch_paths.length > 0) {
+      this.pendingCmds.push({ type: 'advisor_bounty', wave: ws.wave, bonus: bountyCp, predicted, actual });
+    }
+    this.push('bet', { code: result, detail: `wave ${ws.wave}: predicted ${predicted}, actual ${actual}, bounty +${bountyCp} CP` });
   }
 
   /** 复仇一局用的战报（给关卡设计军师当输入） */

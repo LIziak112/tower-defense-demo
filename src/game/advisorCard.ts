@@ -13,6 +13,9 @@ export interface CardHandlers {
   adopt(optionId: string): void;
   takeGambit(): void;
   setAutopilot(on: boolean): void;
+  previewOption?(optionId: string | null): void;
+  blastRoad?(): void;
+  demolishBuilding?(): void;
 }
 
 const STR = {
@@ -21,10 +24,11 @@ const STR = {
     local: '沙盘推演',
     llm: '实时献策',
     thinking: '推演战局中…',
-    adopt: '采纳',
+    adopt: '采纳布阵',
     adopted: '已采纳',
+    preview: '推演预览',
     noSpend: '蓄锐待机',
-    bet: '军师押注：',
+    bet: '军师押注（守赢预测奖 +25 CP）：',
     gambit: '奇策',
     take: '启用',
     taken: '已启用',
@@ -33,6 +37,8 @@ const STR = {
     risk: '留神：',
     fold: '收起',
     unfold: '展开',
+    blast: '💥 炸毁辅路 (-35 CP)',
+    demolish: '🏚️ 推倒建筑 (+30 CP)',
   },
   en: {
     title: 'Advisor',
@@ -41,8 +47,9 @@ const STR = {
     thinking: 'Analyzing…',
     adopt: 'Adopt',
     adopted: 'Adopted',
+    preview: 'Preview',
     noSpend: 'Hold CP',
-    bet: 'Wager: ',
+    bet: 'Wager (+25 CP if beaten): ',
     gambit: 'Gambit',
     take: 'Take',
     taken: 'Taken',
@@ -51,6 +58,8 @@ const STR = {
     risk: 'Risk: ',
     fold: 'Collapse',
     unfold: 'Expand',
+    blast: '💥 Blast Road (-35 CP)',
+    demolish: '🏚️ Demolish (+30 CP)',
   },
 } as const;
 
@@ -175,12 +184,14 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
     root.append(el('p', 'adv-say', `「${skin ? replaceAncientTerms(cur.advice.say, skin, lang) : cur.advice.say}」`));
   }
 
-  // 3. 紧凑型战术方案列表（两三路有取舍的打法）
+  // 3. 紧凑型战术方案列表（两三路有取舍的打法 + 实时沙盘推演预览徽章）
   const canAct = phase === 'build' || phase === 'wave';
   const list = el('div', 'adv-options');
   for (const o of cur.advice.options) {
     const card = el('div', 'adv-opt');
     card.dataset.option = o.id;
+    card.onmouseenter = () => h.previewOption?.(o.id);
+    card.onmouseleave = () => h.previewOption?.(null);
 
     const topRow = el('div', 'adv-line');
     const tag = el('span', 'adv-opt-tag', o.id.toUpperCase());
@@ -197,14 +208,33 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
       : s.noSpend;
     const movesChip = el('span', 'adv-moves', movesSummary);
 
+    const simInfo = cur.simPreviews?.find((sp) => sp.optionId === o.id);
+    if (simInfo) {
+      const simBadge = el(
+        'span',
+        'adv-sim-chip',
+        lang === 'zh'
+          ? `推演:漏${simInfo.leaks}·-${simInfo.costCp}CP`
+          : `Sim:${simInfo.leaks}leak·-${simInfo.costCp}CP`,
+      );
+      simBadge.dataset.simOption = o.id;
+      topRow.append(tag, titleB, movesChip, simBadge);
+    } else {
+      topRow.append(tag, titleB, movesChip);
+    }
+
     const isAdopted = cur.adopted.includes(o.id);
-    const btn = el('button', `adv-adopt${isAdopted ? ' is-adopted' : ''}`, isAdopted ? s.adopted : s.adopt);
+    const btn = el('button', `adv-adopt${isAdopted ? ' is-adopted' : ''}`, isAdopted ? s.adopted : (lang === 'zh' ? '已采纳'.slice(1) : s.adopt));
+    if (isAdopted) btn.textContent = s.adopted;
     btn.type = 'button';
     btn.dataset.adopt = o.id;
     btn.disabled = !canAct || isAdopted || !o.moves.length;
-    btn.onclick = () => h.adopt(o.id);
+    btn.onclick = () => {
+      h.previewOption?.(o.id);
+      h.adopt(o.id);
+    };
 
-    topRow.append(tag, titleB, movesChip, btn);
+    topRow.append(btn);
     card.append(topRow);
 
     card.append(el('p', 'adv-why', skin ? replaceAncientTerms(o.why, skin, lang) : o.why));
@@ -214,8 +244,11 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
   }
   root.append(list);
 
-  // 4. 押注与奇策变招底栏（按皮肤切换调度令/苦修誓约/海事特许令称谓）
-  if (cur.advice.bet) root.append(el('p', 'adv-bet', s.bet + (skin ? replaceAncientTerms(cur.advice.bet.line, skin, lang) : cur.advice.bet.line)));
+  // 4. 押注与奇策变招底栏（讲清军师预测与守赢 +25 CP 悬赏奖励，按皮肤切换称谓）
+  if (cur.advice.bet) {
+    const betBox = el('p', 'adv-bet', s.bet + (skin ? replaceAncientTerms(cur.advice.bet.line, skin, lang) : cur.advice.bet.line));
+    root.append(betBox);
+  }
   if (view.gambit.offer || view.gambit.taken) {
     const g = el('div', 'adv-gambit');
     const id = view.gambit.taken?.id ?? view.gambit.offer!.id;
@@ -236,6 +269,28 @@ export function renderAdvisorCard(root: HTMLElement, view: AdvisorView, pack: Co
     b.onclick = () => h.takeGambit();
     g.append(gInfo, b);
     root.append(g);
+  }
+
+  // 5. 战地工程奇兵（炸毁道路改道 & 推倒皮肤建筑，退出后自动恢复）
+  if (h.blastRoad || h.demolishBuilding) {
+    const engRow = el('div', 'adv-eng-row');
+    if (h.blastRoad) {
+      const blastBtn = el('button', 'adv-eng-btn', s.blast);
+      blastBtn.type = 'button';
+      blastBtn.id = 'td-blast-road';
+      blastBtn.disabled = !canAct;
+      blastBtn.onclick = () => h.blastRoad?.();
+      engRow.append(blastBtn);
+    }
+    if (h.demolishBuilding) {
+      const demBtn = el('button', 'adv-eng-btn', s.demolish);
+      demBtn.type = 'button';
+      demBtn.id = 'td-demolish-building';
+      demBtn.disabled = !canAct;
+      demBtn.onclick = () => h.demolishBuilding?.();
+      engRow.append(demBtn);
+    }
+    root.append(engRow);
   }
 }
 

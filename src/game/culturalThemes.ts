@@ -470,7 +470,7 @@ export function replaceAncientTerms(text: string, skin?: string | null, lang: 'z
   return out;
 }
 
-/** 将内容包（ContentPack）的塔、敌军、主题名按当前皮肤做文化映射与参谋敕令/词缀调制 */
+/** 将内容包（ContentPack）的塔、敌军、主题名按当前皮肤做文化映射与参谋敕令/词缀调制，并补齐多分支并行进军路径 */
 export function localizePackForSkin(
   basePack: ContentPack,
   skin?: string | null,
@@ -490,6 +490,27 @@ export function localizePackForSkin(
   const spdMul = (edict?.enemySpeedMul ?? 1) * affixSpecs.reduce((acc, a) => acc * a.enemySpeedMul, 1);
   const hpMul = affixSpecs.reduce((acc, a) => acc * a.enemyHpMul, 1);
   const rewardBonus = edict?.rewardBonusCp ?? 0;
+
+  // 若 basePack 尚未含多分支路线，基于主路径自动派生一条从第 2 折点分叉、在终点前汇合的侧翼并行进军路线
+  let branchPaths = basePack.map.branch_paths;
+  if ((!branchPaths || !branchPaths.length) && basePack.map.path.length >= 4) {
+    const H = basePack.map.height;
+    const p = basePack.map.path;
+    const start = p[0];
+    const end = p[p.length - 1];
+    const preEnd = p[p.length - 2];
+    const altY = start.y < H / 2 ? Math.min(H - 2, start.y + 4) : Math.max(1, start.y - 4);
+    const midX = Math.max(2, Math.min(basePack.map.width - 3, Math.floor(basePack.map.width * 0.55)));
+    branchPaths = [
+      [
+        { x: start.x, y: altY },
+        { x: midX, y: altY },
+        { x: midX, y: preEnd.y },
+        { x: preEnd.x, y: preEnd.y },
+        { x: end.x, y: end.y },
+      ],
+    ];
+  }
 
   return {
     ...basePack,
@@ -513,6 +534,7 @@ export function localizePackForSkin(
     })),
     map: {
       ...basePack.map,
+      ...(branchPaths ? { branch_paths: branchPaths } : {}),
       base_hp: Math.max(5, basePack.map.base_hp + (edict?.baseHpDelta ?? 0)),
       starting_gold: Math.max(60, basePack.map.starting_gold + (edict?.startingGoldDelta ?? 0)),
     },

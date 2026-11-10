@@ -35,6 +35,68 @@ export function positionAt(path: Cell[], progress: number): { x: number; y: numb
   return { x: end.x * CELL + 500, y: end.y * CELL + 500 };
 }
 
+export function pathForBranch(pack: ContentPack, branch = 0): Cell[] {
+  if (!branch || !pack.map.branch_paths || !pack.map.branch_paths.length) return pack.map.path;
+  return pack.map.branch_paths[(branch - 1) % pack.map.branch_paths.length] ?? pack.map.path;
+}
+
+/**
+ * 塔阵联动博弈规则（参考围棋「气与连接」/ 象棋「子力协同」）：
+ * - 三元共鸣阵（Trinity Resonance）：半径 3.6 格内同时存在破盾+压制+破甲 3 种异构塔，形成三角闭环，伤害 +35%、射程 +15%；
+ * - 双生交叉火网（Crossfire Link）：半径 3.2 格内存在异种塔协同，伤害 +20%；
+ * - 同轨超导阵列（Relay Array）：半径 2.8 格内存在同种塔串联，攻速提升（间隔 ×0.85）。
+ */
+export interface FormationSynergy {
+  towerIid: number;
+  kind: 'trinity' | 'crossfire' | 'relay' | 'none';
+  damageMul: number;
+  rangeMul: number;
+  intervalMul: number;
+  links: { toIid: number; x0: number; y0: number; x1: number; y1: number; kind: 'trinity' | 'crossfire' | 'relay' }[];
+}
+
+export function computeFormationSynergies(towers: TowerInst[]): Map<number, FormationSynergy> {
+  const out = new Map<number, FormationSynergy>();
+  const alive = towers.filter((t) => t.life === 'alive' || t.life === 'pending');
+  for (const t of alive) {
+    const neighbors = alive.filter((o) => o.iid !== t.iid && Math.hypot(o.cx - t.cx, o.cy - t.cy) <= 3.6);
+    if (!neighbors.length) {
+      out.set(t.iid, { towerIid: t.iid, kind: 'none', damageMul: 1, rangeMul: 1, intervalMul: 1, links: [] });
+      continue;
+    }
+    const defs = new Set<string>([t.def, ...neighbors.map((n) => n.def)]);
+    const hasSame = neighbors.some((n) => n.def === t.def && Math.hypot(n.cx - t.cx, n.cy - t.cy) <= 2.85);
+    const hasDiff = neighbors.some((n) => n.def !== t.def && Math.hypot(n.cx - t.cx, n.cy - t.cy) <= 3.35);
+    let kind: FormationSynergy['kind'] = 'none';
+    let damageMul = 1, rangeMul = 1, intervalMul = 1;
+    if (defs.size >= 3) {
+      kind = 'trinity';
+      damageMul = 1.35;
+      rangeMul = 1.15;
+      intervalMul = 0.88;
+    } else if (hasDiff) {
+      kind = 'crossfire';
+      damageMul = 1.20;
+      rangeMul = 1.08;
+    } else if (hasSame) {
+      kind = 'relay';
+      intervalMul = 0.85;
+    }
+    const links = neighbors
+      .filter((n) => n.iid > t.iid)
+      .map((n) => ({
+        toIid: n.iid,
+        x0: t.x,
+        y0: t.y,
+        x1: n.x,
+        y1: n.y,
+        kind: (defs.size >= 3 ? 'trinity' : n.def !== t.def ? 'crossfire' : 'relay') as 'trinity' | 'crossfire' | 'relay',
+      }));
+    out.set(t.iid, { towerIid: t.iid, kind, damageMul, rangeMul, intervalMul, links });
+  }
+  return out;
+}
+
 export function createBattle(pack: ContentPack, seed: number): BattleState {
   return {
     tick: 0,
@@ -54,6 +116,8 @@ export function createBattle(pack: ContentPack, seed: number): BattleState {
     pack,
     path_len: pathLength(pack.map.path),
     gambit: null,
+    craters: [],
+    demolished: [],
   };
 }
 
@@ -66,6 +130,8 @@ export function cloneState(s: BattleState): BattleState {
     enemies: s.enemies.map((e) => ({ ...e })),
     occupied: s.occupied.slice(),
     gambit: s.gambit ? { ...s.gambit } : null,
+    craters: s.craters ? s.craters.map((c) => ({ ...c })) : [],
+    demolished: s.demolished ? s.demolished.map((d) => ({ ...d })) : [],
   };
 }
 
@@ -73,14 +139,23 @@ function scheduleWave(s: BattleState, ev: GameEvent[]) {
   const wave = s.pack.waves[s.wave_index];
   // 变招只作用于它被接下时的那一波（gambit.wave === 当前 wave_index）；没接或接的是别的波 → 倍率全 1，行为与无变招完全一致
   const g0 = s.gambit && s.gambit.wave === s.wave_index ? GAMBITS[s.gambit.id] : null;
+  const branchCount = 1 + (s.pack.map.branch_paths?.length ?? 0);
   let at = s.tick; // spawned this tick (pending) -> active next tick
   let total = 0;
-  for (const g of wave.groups) {
+  for (let gi = 0; gi < wave.groups.length; gi++) {
+    const g = wave.groups[gi];
     const count = g0 ? Math.ceil(g.count * g0.count_mul) : g.count;
     const interval = g0 ? Math.max(1, Math.round(g.interval_ticks * g0.interval_mul)) : g.interval_ticks;
     for (let i = 0; i < count; i++) {
       const plan: BattleState['spawn_queue'][number] = { enemy_id: g.enemy_id, at_tick: at };
       if (g0 && g0.hp_mul !== 1) plan.hp_mul = g0.hp_mul;
+      if (branchCount > 1) {
+        const assignedBranch = g.branch !== undefined ? g.branch % branchCount : (gi + i) % branchCount;
+        // 若某条支线已被炸断，新出兵自动改道汇入未炸毁的主路/邻路
+        const blocked = s.craters?.some((cr) => cr.branch === assignedBranch) ?? false;
+        const finalBranch = blocked ? 0 : assignedBranch;
+        if (finalBranch > 0) plan.branch = finalBranch;
+      }
       s.spawn_queue.push(plan);
       at += interval;
       total++;
@@ -143,6 +218,91 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
       else scheduleWave(s, ev);
     } else if (c.type === 'gambit') {
       applyGambit(s, c, ev);
+    } else if (c.type === 'blast_road') {
+      const cost = 35;
+      if (s.gold >= cost) {
+        const branchCount = 1 + (pack.map.branch_paths?.length ?? 0);
+        const branch = c.branch !== undefined ? c.branch % Math.max(1, branchCount) : (branchCount > 1 ? 1 : 0);
+        const targetPath = pathForBranch(pack, branch);
+        const pLen = pathLength(targetPath);
+        const prog = Math.round(pLen * 0.48);
+        const midPt = positionAt(targetPath, prog);
+        const cx = c.x !== undefined ? c.x : Math.floor(midPt.x / CELL);
+        const cy = c.y !== undefined ? c.y : Math.floor(midPt.y / CELL);
+        s.gold -= cost;
+        if (!s.craters) s.craters = [];
+        s.craters.push({
+          id: `crater-${branch}-${s.craters.length + 1}`,
+          branch,
+          progress: prog,
+          cx,
+          cy,
+          createdAtTick: s.tick,
+        });
+        // 已在队列里准备走该分支的待出兵单位自动改道汇入主路
+        for (const q of s.spawn_queue) {
+          if ((q.branch ?? 0) === branch && branch > 0) delete q.branch;
+        }
+        // 对炸点附近的敌军造成爆破冲击伤害与进度击退
+        let damaged = 0;
+        const bx = cx * CELL + 500, by = cy * CELL + 500;
+        for (const e of s.enemies) {
+          if (e.life !== 'alive') continue;
+          const dist = Math.hypot(e.x - bx, e.y - by);
+          if (dist <= 3200 || (e.branch ?? 0) === branch) {
+            e.hp -= 65;
+            e.progress = Math.max(0, e.progress - 800);
+            damaged++;
+            if (e.hp <= 0) {
+              e.life = 'dying';
+              const def = pack.enemies.find((d) => d.id === e.def)!;
+              s.gold += def.reward;
+              s.kills++;
+              ev.push({ type: 'entity_died', iid: e.iid, reward: def.reward, x: e.x, y: e.y });
+            }
+          }
+        }
+        ev.push({ type: 'road_blasted', branch, cx, cy, cost, damagedEnemies: damaged });
+      }
+    } else if (c.type === 'demolish_building') {
+      if (!s.demolished) s.demolished = [];
+      if (!s.demolished.some((d) => d.key === c.key)) {
+        const cx = c.x !== undefined ? c.x : Math.floor(pack.map.width / 2);
+        const cy = c.y !== undefined ? c.y : Math.floor(pack.map.height / 2);
+        const bonusCp = 30;
+        s.gold += bonusCp;
+        const unlockedSlot = pack.map.buildable_cells.findIndex((b) => b.x === cx && b.y === cy);
+        s.demolished.push({
+          key: c.key,
+          label: c.label || c.key,
+          cx,
+          cy,
+          unlockedSlot: unlockedSlot >= 0 ? unlockedSlot : 0,
+          createdAtTick: s.tick,
+        });
+        let damaged = 0;
+        const bx = cx * CELL + 500, by = cy * CELL + 500;
+        for (const e of s.enemies) {
+          if (e.life !== 'alive') continue;
+          if (Math.hypot(e.x - bx, e.y - by) <= 3800) {
+            e.hp -= 80;
+            damaged++;
+            if (e.hp <= 0) {
+              e.life = 'dying';
+              const def = pack.enemies.find((d) => d.id === e.def)!;
+              s.gold += def.reward;
+              s.kills++;
+              ev.push({ type: 'entity_died', iid: e.iid, reward: def.reward, x: e.x, y: e.y });
+            }
+          }
+        }
+        ev.push({ type: 'building_demolished', key: c.key, label: c.label || c.key, cx, cy, bonusCp, damagedEnemies: damaged });
+      }
+    } else if (c.type === 'advisor_bounty') {
+      if (c.bonus > 0) {
+        s.gold += c.bonus;
+        ev.push({ type: 'advisor_bounty_awarded', wave: c.wave, bonus: c.bonus, predicted: c.predicted, actual: c.actual });
+      }
     } else if (c.type === 'debug_add_gold') {
       s.gold += c.amount;
     } else if (c.type === 'debug_next_wave') {
@@ -156,11 +316,22 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
     s.spawn_queue = s.spawn_queue.filter((p) => p.at_tick > s.tick);
     for (const p of due) {
       const def = pack.enemies.find((d) => d.id === p.enemy_id)!;
-      const pos = positionAt(pack.map.path, 0);
+      const bIdx = p.branch ?? 0;
+      const ePath = pathForBranch(pack, bIdx);
+      const pos = positionAt(ePath, 0);
       const hp = p.hp_mul ? Math.ceil(def.hp * p.hp_mul) : def.hp;   // 变招「铁甲」：出生时加血，其余路径不变
-      const e: EnemyInst = { iid: s.next_iid++, def: def.id, hp, progress: 0, x: pos.x, y: pos.y, life: 'pending' };
+      const e: EnemyInst = {
+        iid: s.next_iid++,
+        def: def.id,
+        hp,
+        progress: 0,
+        x: pos.x,
+        y: pos.y,
+        life: 'pending',
+        ...(bIdx > 0 ? { branch: bIdx } : {}),
+      };
       s.enemies.push(e);
-      ev.push({ type: 'enemy_spawned', iid: e.iid, enemy_id: def.id });
+      ev.push({ type: 'enemy_spawned', iid: e.iid, enemy_id: def.id, ...(bIdx > 0 ? { branch: bIdx } : {}) });
     }
   }
 
@@ -168,25 +339,36 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
   for (const e of s.enemies) {
     if (e.life !== 'alive') continue;
     const def = pack.enemies.find((d) => d.id === e.def)!;
-    e.progress += def.speed;
-    if (e.progress >= s.path_len) {
-      e.progress = s.path_len;
+    const bIdx = e.branch ?? 0;
+    const ePath = pathForBranch(pack, bIdx);
+    const ePathLen = bIdx > 0 ? pathLength(ePath) : s.path_len;
+    // 若经过被炸毁的道路弹坑区域，移速降低 45%
+    const inCrater = s.craters?.some((cr) => cr.branch === bIdx && Math.abs(e.progress - cr.progress) <= 1500) ?? false;
+    const stepSpeed = inCrater ? Math.max(8, Math.round(def.speed * 0.55)) : def.speed;
+    e.progress += stepSpeed;
+    if (e.progress >= ePathLen) {
+      e.progress = ePathLen;
       e.life = 'escaped';
       s.base_hp = Math.max(0, s.base_hp - def.base_damage);
       s.leaks++;
       ev.push({ type: 'entity_escaped', iid: e.iid, base_damage: def.base_damage });
     }
-    const p = positionAt(pack.map.path, e.progress);
+    const p = positionAt(ePath, e.progress);
     e.x = p.x; e.y = p.y;
   }
 
   // 5. targeting: first_on_path = alive enemy in range with max progress (tie: lower iid)
+  // 当地图为多分支（branch_paths 非空）或已触发爆破/推倒时启用塔阵协同增益；经典单线 DEFAULT_PACK 保持原数值以保证 D1 历史回放 checksum 恒等
+  const useSynergy = !!(pack.map.branch_paths && pack.map.branch_paths.length > 0) || (s.craters && s.craters.length > 0) || (s.demolished && s.demolished.length > 0);
+  const synMap = useSynergy ? computeFormationSynergies(s.towers) : null;
   const intents: { tower: TowerInst; target: EnemyInst; damage: number }[] = [];
   for (const t of s.towers) {
     if (t.life !== 'alive') continue;
     if (t.cooldown > 0) { t.cooldown--; if (t.cooldown > 0) continue; }
     const def = pack.towers.find((d) => d.id === t.def)!;
-    const r2 = def.range * def.range;
+    const syn = synMap?.get(t.iid);
+    const effRange = syn ? Math.round(def.range * syn.rangeMul) : def.range;
+    const r2 = effRange * effRange;
     let best: EnemyInst | null = null;
     for (const e of s.enemies) {
       if (e.life !== 'alive') continue;
@@ -195,8 +377,10 @@ export function step(prev: BattleState, commands: Command[] = []): { state: Batt
       if (!best || e.progress > best.progress) best = e;
     }
     if (best) {
-      intents.push({ tower: t, target: best, damage: def.damage });
-      t.cooldown = def.interval_ticks;
+      const effDamage = syn ? Math.max(1, Math.round(def.damage * syn.damageMul)) : def.damage;
+      const effInterval = syn ? Math.max(3, Math.round(def.interval_ticks * syn.intervalMul)) : def.interval_ticks;
+      intents.push({ tower: t, target: best, damage: effDamage });
+      t.cooldown = effInterval;
     }
   }
 

@@ -116,7 +116,7 @@ test('大厅 #25801：四款皮肤原生道路80%-100%/起终点原生建筑/车
 <script>
   const frame = document.getElementById('game');
   window.__msgs = [];
-  window.__wallet = { balanceCp: 1000, netCp: 0, wonCount: 0, lostCount: 0, settled: {} };
+  window.__wallet = { balanceCp: 921857056, netCp: 0, wonCount: 0, lostCount: 0, settled: {} };
   window.__send = (m) => frame.contentWindow.postMessage(m, '*');
   addEventListener('message', (e) => {
     if (e.source !== frame.contentWindow) return;
@@ -234,27 +234,27 @@ test('大厅 #25801：四款皮肤原生道路80%-100%/起终点原生建筑/车
     expect(sp.advRect.right).toBeLessThan(sp.lobRect.left);
   }
 
-  // 验证胜利 +10 CP 与失败 -10 CP 真实结算及同局幂等防重
+  // 验证胜利 +10 CP 与失败 -10 CP 真实结算及同局幂等防重（使用真实账户余额 921857056 CP，绝不出现 1000/1010/990 硬编码基底）
   await game.evaluate(() => (window as any).__td.settleNow('won'));
   await expect.poll(() => game.evaluate(() => (window as any).__td.cp.lastSettlement?.status)).toBe('settled');
   const winCp = await game.evaluate(() => (window as any).__td.cp);
-  expect(winCp.lastSettlement).toMatchObject({ outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 1010, status: 'settled' });
-  await expect(game.locator('#td-cp-settlement')).toContainText('结算 +10 CP · 账户 1010 CP');
+  expect(winCp.lastSettlement).toMatchObject({ outcome: 'won', deltaCp: 10, appliedCp: 10, balanceCp: 921857066, status: 'settled' });
+  await expect(game.locator('#td-cp-settlement')).toContainText('结算 +10 CP · 账户 921857066 CP');
 
-  // 同一 matchId 重复请求宿主结算：宿主返回 idempotent: true, balanceCp 保持 1010 不重复加分
+  // 同一 matchId 重复请求宿主结算：宿主返回 idempotent: true, balanceCp 保持 921857066 不重复加分
   const winMatchId = winCp.lastSettlement.matchId;
   await game.evaluate((mid) => window.parent.postMessage({ type: 'td:settle:request', v: 1, matchId: mid, outcome: 'won', deltaCp: 10 }, '*'), winMatchId);
   await page.waitForTimeout(100);
-  expect(await page.evaluate(() => (window as any).__wallet.balanceCp)).toBe(1010);
+  expect(await page.evaluate(() => (window as any).__wallet.balanceCp)).toBe(921857066);
 
-  // 重开一局并触发失败 -10 CP 结算：账户从 1010 CP 扣减为 1000 CP
+  // 重开一局并触发失败 -10 CP 结算：账户从 921857066 CP 扣减为 921857056 CP
   await game.click('#start-wave'); // restart
   await game.click('#td-direct-play');
   await game.evaluate(() => (window as any).__td.settleNow('lost'));
   await expect.poll(() => game.evaluate(() => (window as any).__td.cp.lastSettlement?.status)).toBe('settled');
   const lossCp = await game.evaluate(() => (window as any).__td.cp);
-  expect(lossCp.lastSettlement).toMatchObject({ outcome: 'lost', deltaCp: -10, appliedCp: -10, balanceCp: 1000, status: 'settled' });
-  await expect(game.locator('#td-cp-settlement')).toContainText('结算 -10 CP · 账户 1000 CP');
+  expect(lossCp.lastSettlement).toMatchObject({ outcome: 'lost', deltaCp: -10, appliedCp: -10, balanceCp: 921857056, status: 'settled' });
+  await expect(game.locator('#td-cp-settlement')).toContainText('结算 -10 CP · 账户 921857056 CP');
 });
 
 test('大厅 #26153：四款皮肤文化设定命名、专属攻防打击动效+减弱动态开关、战前参谋敕令三选一+兵种克制+路线分流+危机词缀', async ({ page }) => {
@@ -420,4 +420,90 @@ test('大厅 #26188 / #26210：顶栏避让与专属图标徽章、真实CP同�
   expect(audit.mem.rounds).toBe(10);
   expect(audit.mem.allZeroAfterCleanup).toBe(true);
   expect(audit.assets3d).toHaveLength(4);
+});
+
+test('大厅 #26911 / #26913：全图尺寸路网贴合、前中后段炮位均衡、战前参谋敕令随时可选、军师实兵推演徽章、多分支塔阵共鸣、道路炸毁与建筑推倒及退出自动复原', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 856 });
+  const hostHtml = `<!DOCTYPE html><html><body style="margin:0">
+<div id="stage" style="width:1440px;height:856px"><iframe id="game" sandbox="allow-scripts" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;height:100%;border:0"></iframe></div>
+<script>
+  const frame = document.getElementById('game');
+  window.__msgs = [];
+  window.__send = (m) => frame.contentWindow.postMessage(m, '*');
+  addEventListener('message', (e) => {
+    if (e.source !== frame.contentWindow) return;
+    window.__msgs.push(e.data);
+  });
+  frame.src = './?v=1&skin=union-atlas-3d&accent=a72e25&bg=f2ebdd&ink=393e38&theme=day&lang=zh&insitu=1&debug=1';
+</script></body></html>`;
+
+  await page.route('**/__td-v8-host.html', (route) => route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: hostHtml }));
+  await page.goto('/__td-v8-host.html');
+  const el = await page.waitForSelector('#game');
+  const game = (await el.contentFrame())!;
+  await game.waitForSelector('#board', { state: 'visible' });
+
+  // 1) 推送真实大额钱包余额 921857056 CP 与完整空间道路网
+  await page.evaluate(() => (window as any).__send({
+    type: 'hikos:context', v: 1, skin: 'union-atlas-3d', accent: 'a72e25', bg: 'f2ebdd', ink: '393e38', theme: 'day', lang: 'zh',
+    insitu: true,
+    advisor: { enabled: false, provider: null },
+    wallet: { balanceCp: 921857056, netCp: 0, wonCount: 0, lostCount: 0 },
+    map: {
+      skin: 'union-atlas-3d', layout: 'river-grid', w: 1440, h: 856,
+      azimuth: -0.38, pitch: 0.78, zoom: 1.0,
+      home: { key: 'home', kind: 'landmark', label: '母星核心', x: 980, y: 460 },
+      spawnBuilding: { key: 'channel:kmind:west', kind: 'entity', label: '西翼厂房', x: 340, y: 240 },
+      baseBuilding: { key: 'home', kind: 'landmark', label: '母星核心', x: 980, y: 460 },
+      ambientTrafficCleared: true,
+      nativeRoads: [
+        { x0: 340, y0: 240, x1: 680, y1: 240, kind: 'native', label: '西翼干道' },
+        { x0: 680, y0: 240, x1: 680, y1: 540, kind: 'native', label: '跨河大桥' },
+        { x0: 680, y0: 540, x1: 980, y1: 460, kind: 'native', label: '东翼大道' },
+      ],
+      landmarks: [{ key: 'home', kind: 'landmark', label: '母星核心', x: 980, y: 460 }],
+      nodes: [
+        { key: 'channel:kmind:west', kind: 'entity', label: '西翼厂房', x: 340, y: 240 },
+        { key: 'channel:kmind:depot', kind: 'entity', label: '北翼仓储楼', x: 620, y: 310 },
+      ],
+    },
+  }));
+
+  // 2) 验证全路线前中后段炮位均衡（后半段 rearCount >= 4）与多分支并行路线
+  const dist = await game.evaluate(() => (window as any).__td.spatial.slotDistribution);
+  expect(dist.frontCount).toBeGreaterThanOrEqual(4);
+  expect(dist.midCount).toBeGreaterThanOrEqual(4);
+  expect(dist.rearCount).toBeGreaterThanOrEqual(4);
+
+  // 3) 验证战前参谋敕令在议事面板与顶栏快捷钮均可点击选中并生效
+  await game.click('#lobby-edicts button[data-edict="fortify_grid"]');
+  await expect(game.locator('#lobby-edicts button[data-edict="fortify_grid"]')).toHaveAttribute('aria-pressed', 'true');
+  expect(await game.evaluate(() => (window as any).__td.state.base_hp)).toBe(26);
+  expect(await game.evaluate(() => (window as any).__td.state.gold)).toBe(100);
+
+  // 通过顶栏快捷按钮切换参谋敕令
+  await game.click('#td-edict-cycle');
+  expect(await game.evaluate(() => (window as any).__td.tactics.selectedEdictId)).toBeNull();
+
+  // 4) 验证军师实兵推演徽章（.adv-sim-chip）与悬停预览
+  await expect(game.locator('#advisor .adv-sim-chip').first()).toContainText('推演:漏');
+
+  // 5) 验证战斗中炸毁道路（#td-blast-road）与推倒皮肤建筑（#td-demolish-building）及退出/重开后完全复原
+  await game.click('#td-blast-road');
+  await game.click('#td-demolish-building');
+  const during = await game.evaluate(() => ({
+    craters: (window as any).__td.spatial.craters.length,
+    demolished: (window as any).__td.spatial.demolished.length,
+  }));
+  expect(during.craters).toBe(1);
+  expect(during.demolished).toBe(1);
+
+  const outboundMsgs = await page.evaluate(() => (window as any).__msgs.map((m: any) => m.type));
+  expect(outboundMsgs).toContain('td:destruct');
+
+  // 触发复原（退出或重开）：验证弹坑与倒塌建筑归零，并向宿主发送 td:restore
+  const afterRestore = await game.evaluate(() => (window as any).__td.restoreDestruction());
+  expect(afterRestore).toEqual({ craters: 0, demolished: 0 });
+  const outboundAfter = await page.evaluate(() => (window as any).__msgs.map((m: any) => m.type));
+  expect(outboundAfter).toContain('td:restore');
 });
