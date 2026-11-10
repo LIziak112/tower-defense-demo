@@ -170,41 +170,79 @@
     .edict-grid {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 5px;
+      pointer-events: auto;
     }
     .edict-card {
-      padding: 4px 7px;
-      border-radius: 4px;
-      border: 1px solid color-mix(in srgb, var(--td-hair) 75%, transparent);
+      padding: 6px 9px;
+      border-radius: 5px;
+      border: 1.5px solid color-mix(in srgb, var(--td-hair) 80%, transparent);
       background: color-mix(in srgb, var(--td-bg) 35%, var(--td-paper));
       cursor: pointer;
-      font-size: 11px;
-      line-height: 1.32;
+      font-size: 11.5px;
+      line-height: 1.35;
       text-align: left;
       color: var(--td-ink);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      box-sizing: border-box;
+      pointer-events: auto !important;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      transition: border-color .15s, background .15s, transform .1s;
+    }
+    .edict-card:hover {
+      border-color: var(--td-accent);
     }
     .edict-card.active {
       border-color: var(--td-accent);
-      background: color-mix(in srgb, var(--td-accent) 16%, var(--td-paper));
+      background: color-mix(in srgb, var(--td-accent) 22%, var(--td-paper));
+      box-shadow: inset 0 0 0 1px var(--td-accent);
+    }
+    .edict-card .edict-radio {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1.5px solid var(--td-accent);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 9px;
+      color: var(--td-paper);
+      background: transparent;
+    }
+    .edict-card.active .edict-radio {
+      background: var(--td-accent);
     }
     .edict-card b {
       display: inline-block;
-      margin-right: 5px;
+      margin-right: 4px;
       color: var(--td-accent);
     }
     .affix-row {
       display: flex;
-      gap: 4px;
+      gap: 5px;
       flex-wrap: wrap;
+      pointer-events: auto;
     }
     .affix-chip {
-      padding: 2px 7px;
+      padding: 4px 8px;
       border-radius: 4px;
       border: 1px dashed color-mix(in srgb, var(--td-hair) 85%, transparent);
       background: color-mix(in srgb, var(--td-bg) 40%, transparent);
       color: var(--td-ink);
       font-size: 11px;
       cursor: pointer;
+      pointer-events: auto !important;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
     .affix-chip.active {
       border-style: solid;
@@ -405,6 +443,37 @@
       background: color-mix(in srgb, var(--td-paper) 75%, var(--td-bg));
       border: 1px solid color-mix(in srgb, var(--td-hair) 60%, transparent);
       opacity: .92;
+    }
+    #advisor .adv-sim-chip {
+      font-size: 10.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 3px;
+      color: var(--td-accent);
+      background: color-mix(in srgb, var(--td-accent) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--td-accent) 45%, transparent);
+      white-space: nowrap;
+    }
+    #advisor .adv-eng-row {
+      display: flex;
+      gap: 5px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    #advisor .adv-eng-btn {
+      flex: 1;
+      padding: 4px 7px;
+      border-radius: 4px;
+      border: 1px solid color-mix(in srgb, var(--td-accent) 55%, var(--td-hair));
+      background: color-mix(in srgb, var(--td-bg) 45%, var(--td-paper));
+      color: var(--td-ink);
+      font: 600 11px/1.25 inherit;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #advisor .adv-eng-btn:hover:not(:disabled) {
+      border-color: var(--td-accent);
+      color: var(--td-accent);
     }
     #advisor .adv-adopt {
       margin-left: auto;

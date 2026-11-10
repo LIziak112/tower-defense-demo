@@ -107,13 +107,17 @@ let campaignLevel = Math.max(1, Math.min(CAMPAIGN_MAX_LEVEL, Number(params.get('
 let currentDpr = 1;
 let matchSeq = 1;
 let settledMatchSeq = 0;
-let localWalletCp: number | null = bridge.embedded ? null : 1000;
+const queryWalletCp = params.has('walletCp') && Number.isFinite(Number(params.get('walletCp')))
+  ? Math.max(0, Math.round(Number(params.get('walletCp'))))
+  : null;
+let localWalletCp: number | null = queryWalletCp;
+let previewOptionId: string | null = null;
 let lastSettlement: {
   matchId: string;
   outcome: 'won' | 'lost';
   deltaCp: number;
   appliedCp: number;
-  balanceCp: number;
+  balanceCp: number | null;
   status: 'pending' | 'settled';
 } | null = null;
 
@@ -132,15 +136,25 @@ function activeSkin(): string | null {
 
 function syncPackLexicon(resetBattle = false) {
   const sk = activeSkin();
+  const prevStartGold = pack.map.starting_gold;
+  const prevBaseHp = pack.map.base_hp;
   if (sk) {
     pack = localizePackForSkin(baseRawPack, sk, lang, selectedEdictId, activeAffixIds);
   } else {
     pack = baseRawPack;
   }
+  const canApplyEdictStats = resetBattle && (state.tick === 0 || (state.wave_index === 0 && state.phase === 'build'));
+  const goldDelta = pack.map.starting_gold - prevStartGold;
+  const hpDelta = pack.map.base_hp - prevBaseHp;
   state = {
     ...state,
     pack,
-    ...(resetBattle && state.tick === 0 ? { gold: pack.map.starting_gold, base_hp: pack.map.base_hp } : {}),
+    ...(canApplyEdictStats
+      ? {
+          gold: state.towers.length === 0 ? pack.map.starting_gold : Math.max(0, state.gold + goldDelta),
+          base_hp: Math.max(1, state.base_hp + hpDelta),
+        }
+      : {}),
   };
 }
 
@@ -197,12 +211,108 @@ const ctx = canvas.getContext('2d')!;
 let cardRaf = 0;
 let cardView: AdvisorView = session.view();
 function scheduleCard() { cancelAnimationFrame(cardRaf); cardRaf = requestAnimationFrame(renderCard); }
+function blastRoadNow(branch = 1): { ok: boolean; cratersCount: number; gold: number } {
+  if (inLobby) enterBattleInSitu();
+  const before = state.craters?.length ?? 0;
+  queue.push({ type: 'blast_road', branch });
+  tickOnce();
+  const cratersCount = state.craters?.length ?? 0;
+  if (cratersCount > before) {
+    const cr = state.craters![cratersCount - 1];
+    const pt = screenPointForMilli(cr.cx * CELL + 500, cr.cy * CELL + 500);
+    if (!isReducedMotion()) {
+      screenShakeUntil = Math.max(screenShakeUntil, performance.now() + 260);
+      vfxStats.screenShakes++;
+      for (let i = 0; i < 16; i++) {
+        particles.push({
+          x: pt.x,
+          y: pt.y,
+          vx: (Math.random() - 0.5) * 140,
+          vy: (Math.random() - 0.5) * 120 - 25,
+          life: 0.65,
+          maxLife: 0.65,
+          color: i % 2 === 0 ? '#ff6d3b' : '#4a4542',
+        });
+      }
+    }
+    floatingPopups.push({
+      x: pt.x,
+      y: pt.y - 18,
+      text: lang === 'zh' ? '💥 炸毁道路 · 敌军改道!' : '💥 Road Blasted · Rerouted!',
+      color: '#ffcf8b',
+      critical: true,
+      life: 0.9,
+      maxLife: 0.9,
+    });
+    bridge.send({ type: 'td:destruct', v: 1, kind: 'road', id: cr.id, branch: cr.branch, cx: cr.cx, cy: cr.cy });
+    renderHud();
+    scheduleCard();
+    draw();
+  }
+  return { ok: cratersCount > before, cratersCount, gold: state.gold };
+}
+
+function demolishBuildingNow(targetKey?: string): { ok: boolean; key: string; demolishedCount: number; gold: number } {
+  if (inLobby) enterBattleInSitu();
+  const nodes = bridge.context.map?.nodes ?? [];
+  const candidates = nodes.length > 0
+    ? nodes
+    : [
+        { key: 'bldg-west-factory', kind: 'entity' as const, label: '西翼厂房', x: 460, y: 320 },
+        { key: 'bldg-north-depot', kind: 'entity' as const, label: '北翼仓储楼', x: 640, y: 280 },
+        { key: 'bldg-south-tower', kind: 'entity' as const, label: '南翼观测站', x: 580, y: 520 },
+      ];
+  const already = new Set((state.demolished ?? []).map((d) => d.key));
+  const picked = (targetKey ? candidates.find((c) => c.key === targetKey) : null)
+    ?? candidates.find((c) => !already.has(c.key))
+    ?? { key: targetKey || `bldg-${(state.demolished?.length ?? 0) + 1}`, kind: 'entity' as const, label: '沿途街坊建筑', x: 520, y: 360 };
+  const midIdx = Math.min(pack.map.buildable_cells.length - 1, Math.max(0, Math.floor(pack.map.buildable_cells.length * 0.5) + (state.demolished?.length ?? 0)));
+  const cell = pack.map.buildable_cells[midIdx] ?? { x: Math.floor(pack.map.width / 2), y: Math.floor(pack.map.height / 2) };
+  const before = state.demolished?.length ?? 0;
+  queue.push({ type: 'demolish_building', key: picked.key, label: picked.label, x: cell.x, y: cell.y });
+  tickOnce();
+  const demolishedCount = state.demolished?.length ?? 0;
+  if (demolishedCount > before) {
+    const pt = screenPointForMilli(cell.x * CELL + 500, cell.y * CELL + 500);
+    if (!isReducedMotion()) {
+      screenShakeUntil = Math.max(screenShakeUntil, performance.now() + 280);
+      vfxStats.screenShakes++;
+      for (let i = 0; i < 18; i++) {
+        particles.push({
+          x: pt.x,
+          y: pt.y,
+          vx: (Math.random() - 0.5) * 130,
+          vy: (Math.random() - 0.5) * 110 - 20,
+          life: 0.72,
+          maxLife: 0.72,
+          color: i % 2 === 0 ? '#d9822b' : '#8c8275',
+        });
+      }
+    }
+    floatingPopups.push({
+      x: pt.x,
+      y: pt.y - 20,
+      text: lang === 'zh' ? `🏚️ 推倒${picked.label} +30 CP` : `🏚️ Demolished ${picked.label} +30 CP`,
+      color: '#ffd599',
+      critical: true,
+      life: 0.95,
+      maxLife: 0.95,
+    });
+    bridge.send({ type: 'td:destruct', v: 1, kind: 'building', key: picked.key, label: picked.label, cx: cell.x, cy: cell.y });
+    renderHud();
+    scheduleCard();
+    draw();
+  }
+  return { ok: demolishedCount > before, key: picked.key, demolishedCount, gold: state.gold };
+}
+
 function renderCard() {
   cardView = session.view();
   advisorBox.style.display = inLobby && !isInsitu() ? 'none' : 'block';
   renderAdvisorCard(advisorBox, cardView, pack, lang, state.phase, {
     adopt: (id) => {
       if (inLobby) enterBattleInSitu();
+      previewOptionId = null;
       queue.push(...session.adopt(id));
     },
     takeGambit: () => {
@@ -211,6 +321,12 @@ function renderCard() {
       if (c) queue.push(c);
     },
     setAutopilot: (on) => session.setAutopilot(on),
+    previewOption: (id) => {
+      previewOptionId = id;
+      draw();
+    },
+    blastRoad: () => { blastRoadNow(1); },
+    demolishBuilding: () => { demolishBuildingNow(); },
   }, activeSkin());
   fit();
 }
@@ -280,7 +396,13 @@ function applyContext(c: HostContext) {
   syncPackLexicon(false);
   applyPalette();
   syncProjector();
-  if (inLobby) showLobby(lastSum);
+  if (inLobby) {
+    showLobby(lastSum);
+    if (isInsitu() && c.advisor?.enabled === false && !session.view().current && session.view().status === 'idle') {
+      session.reset(state);
+      session.afterTick(state, []);
+    }
+  }
   renderHud();
   scheduleCard();
 }
@@ -291,7 +413,7 @@ function onHostSettleReply(sr: HostSettlementReply) {
   }
   const resolvedBalance = typeof sr.balanceCp === 'number' && Number.isFinite(sr.balanceCp)
     ? Math.round(sr.balanceCp)
-    : (localWalletCp ?? 0);
+    : localWalletCp;
   lastSettlement = {
     matchId: sr.matchId || lastSettlement?.matchId || `td-${state.seed}-${matchSeq}`,
     outcome: sr.outcome,
@@ -312,9 +434,9 @@ function settleCurrentMatch(outcome: 'won' | 'lost') {
   const hostCp = bridge.context.wallet?.balanceCp;
   const baseCp = typeof hostCp === 'number' && Number.isFinite(hostCp)
     ? Math.round(hostCp)
-    : (localWalletCp !== null ? localWalletCp : 0);
-  const nextBalance = Math.max(0, baseCp + deltaCp);
-  localWalletCp = nextBalance;
+    : localWalletCp;
+  const nextBalance = baseCp !== null && baseCp !== undefined ? Math.max(0, baseCp + deltaCp) : null;
+  if (nextBalance !== null) localWalletCp = nextBalance;
   lastSettlement = {
     matchId,
     outcome,
@@ -390,13 +512,17 @@ function renderHud() {
   if (s.phase === 'won' || s.phase === 'lost') {
     const delta = lastSettlement?.deltaCp ?? (s.phase === 'won' ? MATCH_WIN_CP : MATCH_LOSS_CP);
     const sign = delta > 0 ? `+${delta}` : `${delta}`;
-    const settledBal = lastSettlement?.balanceCp ?? walletCp ?? 0;
+    const settledBal = lastSettlement?.balanceCp ?? walletCp;
     cpChip.className = `stats cp-badge ${s.phase === 'won' ? 'cp-won' : 'cp-lost'}`;
     cpChip.dataset.deltaCp = String(delta);
-    cpChip.dataset.balanceCp = String(settledBal);
-    const settleLabel = lang === 'zh'
-      ? `结算 ${sign} CP · ${t('wallet')} ${settledBal} CP`
-      : `Settle ${sign} CP · ${t('wallet')} ${settledBal} CP`;
+    cpChip.dataset.balanceCp = settledBal !== null && settledBal !== undefined ? String(settledBal) : '';
+    const settleLabel = settledBal !== null && settledBal !== undefined
+      ? (lang === 'zh'
+          ? `结算 ${sign} CP · ${t('wallet')} ${settledBal} CP`
+          : `Settle ${sign} CP · ${t('wallet')} ${settledBal} CP`)
+      : (lang === 'zh'
+          ? `结算 ${sign} CP · ${t('wallet')}同步中`
+          : `Settle ${sign} CP · ${t('wallet')} Syncing`);
     cpChip.innerHTML = `<span class="hud-ico" aria-hidden="true">💎</span><span>${escHtml(settleLabel)}</span>`;
   } else {
     cpChip.className = 'stats cp-badge';
@@ -407,6 +533,32 @@ function renderHud() {
     cpChip.innerHTML = `<span class="hud-ico" aria-hidden="true">💎</span><span>${escHtml(balLabel)}</span>`;
   }
   hud.append(cpChip);
+
+  // 战前参谋敕令快捷切换钮（大厅 #26913 ⑤：即使关闭了右侧议事窗或处于首波布防期，也可直接在顶栏点击切换参谋敕令）
+  if (s.phase === 'build' && s.wave_index === 0) {
+    const lex = getCulturalLexicon(activeSkin());
+    const curEdict = lex.edicts.find((e) => e.id === selectedEdictId) ?? null;
+    const edictBtn = document.createElement('button');
+    edictBtn.id = 'td-edict-cycle';
+    edictBtn.className = curEdict ? 'sel' : '';
+    edictBtn.dataset.edict = selectedEdictId ?? '';
+    edictBtn.innerHTML = `<span class="btn-ico" aria-hidden="true">📜</span><span>${escHtml(
+      curEdict
+        ? `${lang === 'zh' ? '敕令:' : 'Edict:'}${curEdict.name[lang]}`
+        : (lang === 'zh' ? '敕令:未选(点选)' : 'Edict:None'),
+    )}</span>`;
+    edictBtn.title = lang === 'zh' ? '点击切换战前参谋敕令（三选一）' : 'Click to cycle pre-battle council edicts';
+    edictBtn.onclick = () => {
+      const ids: (EdictOptionSpec['id'] | null)[] = [null, ...lex.edicts.map((e) => e.id)];
+      const idx = ids.indexOf(selectedEdictId);
+      selectedEdictId = ids[(idx + 1) % ids.length];
+      syncPackLexicon(true);
+      if (inLobby) showLobby(lastSum);
+      renderHud();
+      draw();
+    };
+    hud.append(edictBtn);
+  }
 
   // 下一波预览：军师快照里的 wave.next 就是这一行——军师知道的，玩家同样看得见（#24353「不泄露玩家尚不可见的信息」）
   const nextWave = s.phase === 'build' ? pack.waves[s.wave_index] : null;
@@ -497,7 +649,10 @@ function renderHud() {
   if (bridge.embedded) {
     const x = document.createElement('button');
     x.id = 'td-exit'; x.className = 'exit'; x.textContent = t('exit');
-    x.onclick = () => bridge.exit();
+    x.onclick = () => {
+      cleanupBattleResources();
+      bridge.exit();
+    };
     hud.append(x);
   }
 
@@ -818,10 +973,11 @@ const toPx = (m: number) => (m / CELL) * PX;
 function draw() {
   const s = state;
   const walletCp = lastSettlement?.balanceCp ?? bridge.context.wallet?.balanceCp ?? localWalletCp;
+  const walletLabel = walletCp !== null && walletCp !== undefined ? `${walletCp} CP` : (lang === 'zh' ? '同步中' : 'Syncing');
   const settlementText = (s.phase === 'won' || s.phase === 'lost')
     ? (lang === 'zh'
-        ? `本局结算 ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletCp} CP`
-        : `Match ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletCp} CP`)
+        ? `本局结算 ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletLabel}`
+        : `Match ${s.phase === 'won' ? `+${MATCH_WIN_CP}` : MATCH_LOSS_CP} CP · ${t('wallet')} ${walletLabel}`)
     : undefined;
   if (isInsitu()) {
     if (!currentProjector) syncProjector();
@@ -830,6 +986,7 @@ function draw() {
       pathCells: PATH_CELLS,
       cardView,
       selectedTowerId: selected,
+      previewOptionId,
       hoverCell,
       shots,
       particles,
@@ -1018,12 +1175,13 @@ function showLobby(sum?: Summary, text = '') {
         { label: '重甲攻城', prompt: '重甲铁骑攻城，高CP奖励' },
       ];
   const placeholderText = sk ? lex.placeholder[lang] : '输入战局构想，例如：长坂坡雨夜，轻骑突袭';
-  const edictsHtml = `<div class="lobby-section-title"><span>${esc(lex.edictTitle[lang])}</span><small>${lang === 'zh' ? '风险—回报抉择' : 'Risk-Reward'}</small></div>
-    <div class="edict-grid" id="lobby-edicts">
+  const edictsHtml = `<div class="lobby-section-title"><span>${esc(lex.edictTitle[lang])}</span><small>${lang === 'zh' ? '风险—回报抉择（可点选）' : 'Risk-Reward'}</small></div>
+    <div class="edict-grid" id="lobby-edicts" role="radiogroup">
       ${lex.edicts.map((ed) => {
         const active = selectedEdictId === ed.id;
-        return `<button type="button" class="edict-card${active ? ' active' : ''}" data-edict="${esc(ed.id)}">
-          <b>${esc(ed.name[lang])}</b><span>+${esc(ed.upside[lang])} / -${esc(ed.downside[lang])}</span>
+        return `<button type="button" class="edict-card${active ? ' active' : ''}" data-edict="${esc(ed.id)}" aria-pressed="${active ? 'true' : 'false'}">
+          <span class="edict-radio" aria-hidden="true">${active ? '✓' : ''}</span>
+          <span><b>${esc(ed.name[lang])}</b><span>+${esc(ed.upside[lang])} / -${esc(ed.downside[lang])}</span></span>
         </button>`;
       }).join('')}
     </div>`;
@@ -1033,7 +1191,7 @@ function showLobby(sum?: Summary, text = '') {
     <div class="affix-row" id="lobby-affixes">
       ${lex.affixes.map((af) => {
         const active = activeAffixIds.includes(af.id);
-        return `<button type="button" class="affix-chip${active ? ' active' : ''}" data-affix="${esc(af.id)}" title="${esc(af.desc[lang])}">
+        return `<button type="button" class="affix-chip${active ? ' active' : ''}" data-affix="${esc(af.id)}" aria-pressed="${active ? 'true' : 'false'}" title="${esc(af.desc[lang])}">
           ${esc(af.name[lang])}
         </button>`;
       }).join('')}
@@ -1061,24 +1219,45 @@ function showLobby(sum?: Summary, text = '') {
     });
   });
 
+  // 修复 #26913 ⑤ 战前参谋敕令在触控屏/iPad Safari 下点击失效问题：原地切换 .active 与 aria-pressed，不在 click 回调中整块销毁重建 lobby DOM
   lobby.querySelectorAll('[data-edict]').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
       const id = (btn as HTMLElement).dataset.edict as EdictOptionSpec['id'];
       selectedEdictId = selectedEdictId === id ? null : id;
       syncPackLexicon(true);
+      lobby.querySelectorAll('[data-edict]').forEach((el) => {
+        const b = el as HTMLElement;
+        const on = b.dataset.edict === selectedEdictId;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        const radio = b.querySelector('.edict-radio');
+        if (radio) radio.textContent = on ? '✓' : '';
+      });
       renderHud();
-      showLobby(lastSum, (lobby.querySelector('#desc') as HTMLTextAreaElement | null)?.value ?? text);
+      scheduleCard();
+      draw();
     });
   });
 
   lobby.querySelectorAll('[data-affix]').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
       const id = (btn as HTMLElement).dataset.affix as CrisisAffixSpec['id'];
       if (activeAffixIds.includes(id)) activeAffixIds = activeAffixIds.filter((x) => x !== id);
       else activeAffixIds = [...activeAffixIds, id];
       syncPackLexicon(true);
+      lobby.querySelectorAll('[data-affix]').forEach((el) => {
+        const b = el as HTMLElement;
+        const on = activeAffixIds.includes(b.dataset.affix as CrisisAffixSpec['id']);
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      const ratingEl = lobby.querySelector('#td-crisis-rating');
+      if (ratingEl) ratingEl.textContent = lang === 'zh' ? `挑战评级 R${activeAffixIds.length}` : `Crisis R${activeAffixIds.length}`;
       renderHud();
-      showLobby(lastSum, (lobby.querySelector('#desc') as HTMLTextAreaElement | null)?.value ?? text);
+      scheduleCard();
+      draw();
     });
   });
 
@@ -1160,6 +1339,12 @@ function cleanupBattleResources() {
   queue = [];
   hitStopUntil = 0;
   screenShakeUntil = 0;
+  previewOptionId = null;
+  if (state.craters && state.craters.length > 0) state = { ...state, craters: [] };
+  if (state.demolished && state.demolished.length > 0) state = { ...state, demolished: [] };
+  if (!firstFrame) {
+    bridge.send({ type: 'td:restore', v: 1 });
+  }
 }
 
 window.addEventListener('pagehide', () => {
@@ -1478,10 +1663,22 @@ requestAnimationFrame(frame);
         vfx: ['auraRing', 'wakeTrail', 'battleCrest'],
       })),
       waypoints: p.waypoints,
-      tacticalSlots: p.tacticalSlots.slice(0, 16),
+      branchWaypoints: p.branchWaypoints,
+      slotDistribution: p.slotDistribution,
+      tacticalSlots: p.tacticalSlots.slice(0, 18),
+      craters: state.craters ?? [],
+      demolished: state.demolished ?? [],
       slotScreen: (slot: number) => { const c = slotCell(pack, slot); return c ? p.cellToScreen(c.x + 0.5, c.y + 0.5) : null; },
       cellScreen: (cx: number, cy: number) => p.cellToScreen(cx + 0.5, cy + 0.5),
     };
+  },
+  blastRoad: (branch = 1) => blastRoadNow(branch),
+  demolishBuilding: (key?: string) => demolishBuildingNow(key),
+  restoreDestruction: () => {
+    cleanupBattleResources();
+    renderHud();
+    draw();
+    return { craters: state.craters?.length ?? 0, demolished: state.demolished?.length ?? 0 };
   },
 };
 // 军师读点（E2E / 宿主侧 test-arcade 用）：只读视图 + 与卡片按钮等价的三个动作；没有任何注入回包的后门（回包只能从通道来）

@@ -3,7 +3,7 @@
 // 1. 去掉死板的外围矩形网格框、逐格方块与满屏 #编号，彻底消除「浮层画格子」感；
 // 2. 绘制 5 层 2.5D 等轴测立体轨道（地面阴影 + 护坡路基 + 等轴测轨枕刻度 + 双侧平行护栏导轨 + 中央流光导引脉冲）；
 // 3. 沿途建塔位采用贴地圆形/菱形战术承重基座，悬停或军师推荐时浮现胶囊铭牌与透视射程光环。
-import { CELL } from '../runtime/sim';
+import { CELL, computeFormationSynergies } from '../runtime/sim';
 import type { BattleState, Cell, ContentPack } from '../runtime/types';
 import { reachTable, slotCell } from '../advisor/snapshot';
 import type { AdvisorView } from '../advisor/session';
@@ -88,6 +88,15 @@ export interface TacticalSlot {
   sy: number;
   adjacentToPath: boolean;
   reach: number;
+  progressRatio?: number;
+  zone?: 'front' | 'mid' | 'rear';
+}
+
+export interface SlotDistribution {
+  frontCount: number;
+  midCount: number;
+  rearCount: number;
+  totalActive: number;
 }
 
 export interface SpatialProjector {
@@ -101,9 +110,11 @@ export interface SpatialProjector {
   readonly origin: { x: number; y: number };
   readonly cellPx: number;
   readonly tacticalSlots: TacticalSlot[];
+  readonly slotDistribution: SlotDistribution;
   readonly hostMap: HostSpatialMap | null;
   readonly roadPlan: RoadPlan;
   readonly waypoints: { x: number; y: number }[];
+  readonly branchWaypoints: { x: number; y: number }[];
   /** 逻辑连续格坐标 (gx, gy)（格中心为 cx+0.5, cy+0.5）→ 空间地图画布像素坐标 (x, y) */
   cellToScreen(gx: number, gy: number): { x: number; y: number };
   /** 毫格坐标 (mx, my) → 空间地图画布像素坐标 (x, y) */
@@ -239,18 +250,17 @@ export function createSpatialProjector(
   const sinA = Math.sin(azimuth);
   const sinP = Math.sin(pitch);
 
-  // 计算旋转与俯仰后的战场包络，留出顶部指挥条、两侧紧凑对话框与底部 dock 的安全边距
+  // 计算旋转与俯仰后的全图战场包络（大厅 #26913 ①：充分利用皮肤地图整体尺寸和布局，消除路线局部狭促）
   const spanX = Math.max(4, W * Math.abs(cosA) + H * Math.abs(sinA));
   const spanY = Math.max(3, (W * Math.abs(sinA) + H * Math.abs(cosA)) * sinP);
-  const safeW = Math.max(260, vw * 0.62);
-  const safeH = Math.max(200, vh * 0.56);
+  const safeW = Math.max(320, vw * 0.72);
+  const safeH = Math.max(240, vh * 0.68);
   const baseCell = Math.min(safeW / spanX, safeH / spanY);
-  const cellPx = Math.max(26, Math.min(78, baseCell * Math.pow(zoom, 0.42)));
+  const cellPx = Math.max(30, Math.min(84, baseCell * Math.pow(zoom, 0.45)));
 
-  // 起点与终点直接绑定皮肤原生建筑基础设施（大厅 #25801 ①）：
-  // 起点与终点直接绑定皮肤原生建筑基础设施（大厅 #25801 ① + #26188 ⑤⑥ + #26210）：
-  // 终点严格锚定母星核心主建筑 home（方碑/主座），起点锚定外围地标建筑；
-  // 路径拓扑严格贴合皮肤真实道路网络（concentric-town 走同心圆环道 + 穿环放射直道 + 圆心广场；river-grid / district-grid / quays 走真实街区大道与跨河栈桥）。
+  // 起点与终点直接绑定皮肤原生建筑基础设施（大厅 #25801 ① + #26188 ⑤⑥ + #26210 + #26913 ①②③⑧）：
+  // 终点严格锚定母星核心主建筑 home（方碑/主座），起点锚定外围远端地标建筑；
+  // 路线充分利用整张皮肤地图的横向与纵向街区跨度，并紧贴底层 3D 皮肤的真实道路网络。
   const scaleX = hostMap ? vw / Math.max(1, hostMap.w) : 1;
   const scaleY = hostMap ? vh / Math.max(1, hostMap.h) : 1;
   const endCell = pack.map.path[pack.map.path.length - 1] ?? { x: W - 1, y: H - 1 };
@@ -260,21 +270,21 @@ export function createSpatialProjector(
   const dyEnd = (uEnd * sinA + vEnd * cosA) * sinP;
 
   const baseBldRaw = hostMap?.home ?? hostMap?.baseBuilding ?? null;
-  const targetEndX = baseBldRaw ? baseBldRaw.x * scaleX : vw * 0.62;
-  const targetEndY = baseBldRaw ? baseBldRaw.y * scaleY : vh * 0.50;
-  const defaultOriginX = Math.round(vw * 0.51);
-  const defaultOriginY = Math.round(vh * 0.48);
+  const targetEndX = baseBldRaw ? baseBldRaw.x * scaleX : vw * 0.66;
+  const targetEndY = baseBldRaw ? baseBldRaw.y * scaleY : vh * 0.52;
+  const defaultOriginX = Math.round(vw * 0.50);
+  const defaultOriginY = Math.round(vh * 0.49);
   const desiredOriginX = targetEndX - dxEnd;
   const desiredOriginY = targetEndY - dyEnd;
   const origin = {
-    x: Math.round(Math.max(vw * 0.34, Math.min(vw * 0.65, desiredOriginX * 0.72 + defaultOriginX * 0.28))),
-    y: Math.round(Math.max(vh * 0.35, Math.min(vh * 0.58, desiredOriginY * 0.72 + defaultOriginY * 0.28))),
+    x: Math.round(Math.max(vw * 0.30, Math.min(vw * 0.70, desiredOriginX * 0.74 + defaultOriginX * 0.26))),
+    y: Math.round(Math.max(vh * 0.32, Math.min(vh * 0.64, desiredOriginY * 0.74 + defaultOriginY * 0.26))),
   };
 
-  const safeLeft = vw >= 920 ? 290 : 56;
-  const safeRight = vw >= 920 ? vw - 290 : vw - 56;
-  const safeTop = 86;
-  const safeBottom = vh - 136;
+  const safeLeft = vw >= 920 ? 284 : 52;
+  const safeRight = vw >= 920 ? vw - 284 : vw - 52;
+  const safeTop = 82;
+  const safeBottom = vh - 132;
   const clampSafe = (pt: { x: number; y: number }) => ({
     x: Math.round(Math.max(safeLeft, Math.min(safeRight, pt.x)) * 10) / 10,
     y: Math.round(Math.max(safeTop, Math.min(safeBottom, pt.y)) * 10) / 10,
@@ -314,8 +324,8 @@ export function createSpatialProjector(
     ? {
         ...baseBldRaw,
         key: 'home',
-        x: Math.round(Math.max(safeLeft + 40, Math.min(safeRight - 40, baseBldRaw.x * scaleX))),
-        y: Math.round(Math.max(safeTop + 40, Math.min(safeBottom - 40, baseBldRaw.y * scaleY))),
+        x: Math.round(Math.max(safeLeft + 36, Math.min(safeRight - 36, baseBldRaw.x * scaleX))),
+        y: Math.round(Math.max(safeTop + 36, Math.min(safeBottom - 36, baseBldRaw.y * scaleY))),
       }
     : { key: 'home', kind: 'landmark', label: '母星防线', x: Math.round(fallbackEnd.x), y: Math.round(fallbackEnd.y) };
 
@@ -323,22 +333,23 @@ export function createSpatialProjector(
   if (hostMap?.spawnBuilding) {
     startBuilding = {
       ...hostMap.spawnBuilding,
-      x: Math.round(Math.max(safeLeft + 16, Math.min(safeRight - 16, hostMap.spawnBuilding.x * scaleX))),
-      y: Math.round(Math.max(safeTop + 16, Math.min(safeBottom - 16, hostMap.spawnBuilding.y * scaleY))),
+      x: Math.round(Math.max(safeLeft + 14, Math.min(safeRight - 14, hostMap.spawnBuilding.x * scaleX))),
+      y: Math.round(Math.max(safeTop + 14, Math.min(safeBottom - 14, hostMap.spawnBuilding.y * scaleY))),
     };
   } else {
     const nonBase = allCandidates.filter((n) => n.key !== endBuilding.key);
     let bestNode: HostSpatialNode | null = null;
-    let bestD = Infinity;
+    let bestD = -1;
+    // 优先挑选与终点跨度最大的远端外围建筑作为起点，彻底拉开全图纵深（#26913 ①）
     for (const n of nonBase) {
       const nx = n.x * scaleX, ny = n.y * scaleY;
-      const d = Math.hypot(nx - fallbackStart.x, ny - fallbackStart.y);
-      if (d < bestD) {
+      const d = Math.hypot(nx - endBuilding.x, ny - endBuilding.y);
+      if (d > bestD) {
         bestD = d;
         bestNode = {
           ...n,
-          x: Math.round(Math.max(safeLeft + 16, Math.min(safeRight - 16, nx))),
-          y: Math.round(Math.max(safeTop + 16, Math.min(safeBottom - 16, ny))),
+          x: Math.round(Math.max(safeLeft + 14, Math.min(safeRight - 14, nx))),
+          y: Math.round(Math.max(safeTop + 14, Math.min(safeBottom - 14, ny))),
         };
       }
     }
@@ -352,151 +363,226 @@ export function createSpatialProjector(
           : hostMap?.skin === 'union-atlas-3d'
             ? '西翼工业厂房'
             : '河岸北翼街坊',
-      x: Math.round(Math.max(safeLeft + 16, Math.min(safeRight - 16, fallbackStart.x))),
-      y: Math.round(Math.max(safeTop + 16, Math.min(safeBottom - 16, fallbackStart.y))),
+      x: Math.round(Math.max(safeLeft + 16, Math.min(safeRight - 16, safeLeft + 44))),
+      y: Math.round(Math.max(safeTop + 16, Math.min(safeBottom - 16, safeTop + 56))),
     };
   }
-  if (Math.hypot(startBuilding.x - endBuilding.x, startBuilding.y - endBuilding.y) < 140) {
+  // 若宿主给的起点建筑离终点过近（如集中在地图一隅），自动沿皮肤主干街道延伸至远端外围街区，充分利用整张皮肤地图尺寸
+  if (Math.hypot(startBuilding.x - endBuilding.x, startBuilding.y - endBuilding.y) < 340) {
+    const pushLeft = endBuilding.x >= (safeLeft + safeRight) * 0.5;
     startBuilding = {
       ...startBuilding,
-      x: Math.round(Math.max(safeLeft + 24, Math.min(safeRight - 24, endBuilding.x - Math.min(310, (safeRight - safeLeft) * 0.44)))),
-      y: Math.round(Math.max(safeTop + 24, Math.min(safeBottom - 24, endBuilding.y - 72))),
+      x: Math.round(pushLeft ? Math.max(safeLeft + 24, Math.min(startBuilding.x, safeLeft + 92)) : Math.min(safeRight - 24, Math.max(startBuilding.x, safeRight - 92))),
+      y: Math.round(Math.max(safeTop + 28, Math.min(safeBottom - 28, endBuilding.y >= (safeTop + safeBottom) * 0.5 ? safeTop + 68 : safeBottom - 68))),
     };
   }
 
   // 展开逻辑路径格序列，以便将每个路径格与沿途建塔位贴合到皮肤真实道路拓扑上
-  const orderedPathCells: Cell[] = [];
-  if (pack.map.path.length > 0) {
-    orderedPathCells.push({ x: pack.map.path[0].x, y: pack.map.path[0].y });
-    for (let i = 1; i < pack.map.path.length; i++) {
-      const a = pack.map.path[i - 1], b = pack.map.path[i];
-      const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
-      let cx = a.x, cy = a.y;
-      while (cx !== b.x || cy !== b.y) {
-        cx += dx;
-        cy += dy;
-        orderedPathCells.push({ x: cx, y: cy });
+  const expandCellsOrdered = (p: Cell[]): Cell[] => {
+    const out: Cell[] = [];
+    if (p.length > 0) {
+      out.push({ x: p[0].x, y: p[0].y });
+      for (let i = 1; i < p.length; i++) {
+        const a = p[i - 1], b = p[i];
+        const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
+        let cx = a.x, cy = a.y;
+        while (cx !== b.x || cy !== b.y) {
+          cx += dx;
+          cy += dy;
+          out.push({ x: cx, y: cy });
+        }
       }
     }
-  }
+    return out;
+  };
+  const orderedPathCells = expandCellsOrdered(pack.map.path);
+  const orderedBranchCells = pack.map.branch_paths && pack.map.branch_paths[0]
+    ? expandCellsOrdered(pack.map.branch_paths[0])
+    : [];
 
-  // 构建贴合皮肤真实道路几何的控制折线/圆弧节点（解决 #26210 同心环城圆环与放射道路贴合问题）
+  // 构建贴合皮肤真实道路几何的全图控制折线/圆弧节点（解决 #26913 ①②⑧ 全图尺寸利用、100% 紧贴皮肤原生道路与多路并行推进）
   const isConcentric = hostMap?.layout === 'concentric-town' || hostMap?.skin === 'gothic-cathedral-3d';
   const pathVariant = orderedPathCells.reduce((acc, c, idx) => (acc * 31 + c.x * 7 + c.y * 13 + idx) >>> 0, 17);
   const topologyWaypoints: { x: number; y: number }[] = [];
+  const branchTopologyWaypoints: { x: number; y: number }[] = [];
+
+  // 将任意屏幕点吸附到最近的宿主真实原生道路线段（hostMap.nativeRoads）上，确保路线与皮肤自身道路紧密融为一体
+  const snapToNativeRoad = (pt: { x: number; y: number }, maxSnapDist = 72): { x: number; y: number } => {
+    const clamped = clampSafe(pt);
+    if (!hostMap?.nativeRoads || hostMap.nativeRoads.length === 0) return clamped;
+    let bestPt = clamped;
+    let bestD = maxSnapDist;
+    for (const seg of hostMap.nativeRoads) {
+      const ax = seg.x0 * scaleX, ay = seg.y0 * scaleY;
+      const bx = seg.x1 * scaleX, by = seg.y1 * scaleY;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 4) continue;
+      const t = Math.max(0, Math.min(1, ((clamped.x - ax) * dx + (clamped.y - ay) * dy) / len2));
+      const px = ax + dx * t, py = ay + dy * t;
+      const d = Math.hypot(clamped.x - px, clamped.y - py);
+      if (d < bestD) {
+        bestD = d;
+        bestPt = clampSafe({ x: px, y: py });
+      }
+    }
+    return bestPt;
+  };
 
   if (isConcentric && hostMap) {
     // 同心环城（gothic-cathedral-3d）：
     // 底图由圆心广场（r=17）、外环圆周大道（r=27）与 4 条对角穿环放射直道（±45°, ±135°）组成。
-    // 路径严格沿着：起点外环建筑 -> 外环圆周大道圆弧（6 个加密采样点） -> 穿环放射直道 -> 圆心广场环道弧线（3 个采样点） -> 中心母星圣堂主座 home！
-    const cx = endBuilding.x;
-    const cy = endBuilding.y;
-    const rxOuter = Math.min(Math.max(155, Math.abs(startBuilding.x - cx) * 0.92), Math.min(cx - safeLeft - 18, safeRight - cx - 18, 250));
-    const ryOuter = Math.min(Math.max(98, rxOuter * sinP), Math.min(cy - safeTop - 18, safeBottom - cy - 18, 165));
+    // 主干路：外环北翼/西翼大道（大圆弧环绕 240°+）-> 穿环放射直道 -> 内环圆心广场弧线 -> 圣堂主座 home；
+    // 并行分支路：外环南翼/东翼反向圆周大道 -> 另一条穿环放射直道 -> 内环汇合 -> 圣堂主座 home！
+    const cx = Math.round(Math.max(safeLeft + 180, Math.min(safeRight - 180, endBuilding.x)));
+    const cy = Math.round(Math.max(safeTop + 125, Math.min(safeBottom - 125, endBuilding.y)));
+    const rxOuter = Math.min(Math.max(210, (safeRight - safeLeft) * 0.42), Math.min(cx - safeLeft - 14, safeRight - cx - 14, 340));
+    const ryOuter = Math.min(Math.max(132, rxOuter * sinP), Math.min(cy - safeTop - 14, safeBottom - cy - 14, 215));
     const rxInner = rxOuter * (17 / 27);
     const ryInner = ryOuter * (17 / 27);
 
     const startAng = Math.atan2((startBuilding.y - cy) / Math.max(1, ryOuter), (startBuilding.x - cx) / Math.max(1, rxOuter));
-    // 选择一条与起点夹角 ≥ 110° 的真实穿环放射直道（gothic.js: (j+0.5)*π/2）
     const radialAngles = [Math.PI * 0.25, Math.PI * 0.75, -Math.PI * 0.75, -Math.PI * 0.25];
     const dir = (pathVariant % 2 === 0) ? 1 : -1;
     const chosenRadial = radialAngles[(pathVariant >>> 1) % radialAngles.length];
     let sweep = chosenRadial - startAng;
-    while (dir > 0 && sweep < Math.PI * 0.55) sweep += Math.PI * 2;
-    while (dir < 0 && sweep > -Math.PI * 0.55) sweep -= Math.PI * 2;
-    if (Math.abs(sweep) > Math.PI * 1.45) sweep = dir * Math.PI * 1.15;
+    while (dir > 0 && sweep < Math.PI * 0.85) sweep += Math.PI * 2;
+    while (dir < 0 && sweep > -Math.PI * 0.85) sweep -= Math.PI * 2;
+    if (Math.abs(sweep) > Math.PI * 1.55) sweep = dir * Math.PI * 1.35;
 
     topologyWaypoints.push(clampSafe({ x: startBuilding.x, y: startBuilding.y }));
-    const outerSteps = 7;
+    const outerSteps = 8;
     for (let s = 0; s <= outerSteps; s++) {
       const a = startAng + (sweep * s) / outerSteps;
-      topologyWaypoints.push(clampSafe({
+      topologyWaypoints.push(snapToNativeRoad({
         x: cx + Math.cos(a) * rxOuter,
         y: cy + Math.sin(a) * ryOuter,
-      }));
+      }, 36));
     }
-    // 沿穿环放射直道从外环 (r=27) 笔直穿入内环圆心广场 (r=17)
     const radialEndAng = startAng + sweep;
-    topologyWaypoints.push(clampSafe({
+    topologyWaypoints.push(snapToNativeRoad({
       x: cx + Math.cos(radialEndAng) * ((rxOuter + rxInner) * 0.5),
       y: cy + Math.sin(radialEndAng) * ((ryOuter + ryInner) * 0.5),
-    }));
-    // 沿圆心广场环道 (r=17) 绕行一小段弧线后进入圆心圣堂主座 home
-    const plazaSteps = 3;
-    const plazaSweep = -dir * Math.PI * 0.42;
+    }, 36));
+    const plazaSteps = 4;
+    const plazaSweep = -dir * Math.PI * 0.55;
     for (let s = 0; s <= plazaSteps; s++) {
       const a = radialEndAng + (plazaSweep * s) / plazaSteps;
-      topologyWaypoints.push(clampSafe({
+      topologyWaypoints.push(snapToNativeRoad({
         x: cx + Math.cos(a) * rxInner,
         y: cy + Math.sin(a) * ryInner,
-      }));
+      }, 32));
     }
     topologyWaypoints.push(clampSafe({ x: endBuilding.x, y: endBuilding.y }));
+
+    // 反向环城分支路线（Branch 1）
+    const altSweep = -dir * Math.PI * 1.05;
+    branchTopologyWaypoints.push(topologyWaypoints[0]);
+    for (let s = 0; s <= 6; s++) {
+      const a = startAng + (altSweep * s) / 6;
+      branchTopologyWaypoints.push(snapToNativeRoad({
+        x: cx + Math.cos(a) * rxOuter,
+        y: cy + Math.sin(a) * ryOuter,
+      }, 36));
+    }
+    const altRadialAng = startAng + altSweep;
+    branchTopologyWaypoints.push(snapToNativeRoad({
+      x: cx + Math.cos(altRadialAng) * rxInner,
+      y: cy + Math.sin(altRadialAng) * ryInner,
+    }, 36));
+    branchTopologyWaypoints.push(clampSafe({ x: endBuilding.x, y: endBuilding.y }));
   } else if (hostMap) {
     // 棋盘/河岸/港湾街区拓扑（union-atlas-3d / metropolis-riverside-3d / harbor-district-3d）：
-    // 沿着起点建筑 -> 纵向街区干道 -> 跨河/跨港大桥 -> 滨水大道 -> 中央广场主建筑 home 正交街区走线
+    // 充分铺开整张皮肤地图的西翼街区、中央跨河大桥/引航栈道、东翼滨水大道与母星广场，彻底消除局部狭促！
+    const spanW = safeRight - safeLeft;
+    const spanH = safeBottom - safeTop;
     const sx = startBuilding.x, sy = startBuilding.y;
     const ex = endBuilding.x, ey = endBuilding.y;
-    const dx = ex - sx, dy = ey - sy;
-    const bendSign = (pathVariant % 2 === 0) ? 1 : -1;
-    const orthX = -sinA * 52 * bendSign;
-    const orthY = cosA * sinP * 52 * bendSign;
-    const p1 = clampSafe({ x: sx + dx * 0.22 + orthX * 0.6, y: sy + dy * 0.08 + orthY * 0.6 });
-    const p2 = clampSafe({ x: sx + dx * 0.26 + orthX, y: sy + dy * 0.52 + orthY });
-    const p3 = clampSafe({ x: sx + dx * 0.64 - orthX * 0.45, y: sy + dy * 0.56 - orthY * 0.45 });
-    const p4 = clampSafe({ x: sx + dx * 0.68 - orthX * 0.85, y: sy + dy * 0.88 - orthY * 0.85 });
-    const p5 = clampSafe({ x: sx + dx * 0.90, y: sy + dy * 0.92 });
-    topologyWaypoints.push(
-      clampSafe({ x: sx, y: sy }),
-      p1,
-      p2,
-      p3,
-      p4,
-      p5,
-      clampSafe({ x: ex, y: ey }),
-    );
+    const westX = Math.round(safeLeft + spanW * 0.12);
+    const midWestX = Math.round(safeLeft + spanW * 0.36);
+    const riverBridgeX = Math.round(safeLeft + spanW * 0.58);
+    const eastX = Math.round(safeLeft + spanW * 0.84);
+    const northY = Math.round(safeTop + spanH * 0.16);
+    const centerY = Math.round(safeTop + spanH * 0.50);
+    const southY = Math.round(safeTop + spanH * 0.84);
+    const flip = (pathVariant % 2 === 0);
+
+    const rawChain = [
+      { x: sx, y: sy },
+      { x: westX, y: flip ? northY : southY },
+      { x: midWestX, y: flip ? northY : southY },
+      { x: midWestX, y: flip ? southY : northY },
+      { x: riverBridgeX, y: flip ? southY : northY },
+      { x: riverBridgeX, y: centerY },
+      { x: eastX, y: centerY },
+      { x: eastX, y: ey },
+      { x: ex, y: ey },
+    ];
+    for (const pt of rawChain) {
+      topologyWaypoints.push(snapToNativeRoad(pt, 54));
+    }
+
+    // 第 2 条并行进军路线（从起点经另一侧跨河大桥/南翼栈道包抄汇入终点母星）
+    const altChain = [
+      { x: sx, y: sy },
+      { x: westX, y: flip ? southY : northY },
+      { x: riverBridgeX, y: flip ? northY : southY },
+      { x: eastX, y: flip ? northY : southY },
+      { x: eastX, y: ey },
+      { x: ex, y: ey },
+    ];
+    for (const pt of altChain) {
+      branchTopologyWaypoints.push(snapToNativeRoad(pt, 54));
+    }
   } else {
     for (const c of pack.map.path) {
       topologyWaypoints.push(clampSafe(affineCellToScreen(c.x + 0.5, c.y + 0.5)));
     }
+    if (pack.map.branch_paths && pack.map.branch_paths[0]) {
+      for (const c of pack.map.branch_paths[0]) {
+        branchTopologyWaypoints.push(clampSafe(affineCellToScreen(c.x + 0.5, c.y + 0.5)));
+      }
+    }
   }
 
-  // 计算拓扑折线总弧长并把 orderedPathCells 均匀映射到真实道路拓扑上
-  const segLengths: number[] = [];
-  let totalTopoLen = 0;
-  for (let i = 1; i < topologyWaypoints.length; i++) {
-    const d = Math.hypot(topologyWaypoints[i].x - topologyWaypoints[i - 1].x, topologyWaypoints[i].y - topologyWaypoints[i - 1].y);
-    segLengths.push(d);
-    totalTopoLen += d;
-  }
-  const sampleAlongTopology = (tNorm: number): { x: number; y: number; nx: number; ny: number } => {
-    if (topologyWaypoints.length === 0) return { x: origin.x, y: origin.y, nx: 0, ny: -1 };
-    if (topologyWaypoints.length === 1 || totalTopoLen < 1e-3) {
-      return { x: topologyWaypoints[0].x, y: topologyWaypoints[0].y, nx: 0, ny: -1 };
+  // 构建多边形折线采样器
+  const makePolylineSampler = (pts: { x: number; y: number }[]) => {
+    const lens: number[] = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      lens.push(d);
+      total += d;
     }
-    const targetDist = Math.max(0, Math.min(1, tNorm)) * totalTopoLen;
-    let acc = 0;
-    for (let i = 0; i < segLengths.length; i++) {
-      const sl = segLengths[i];
-      if (acc + sl >= targetDist || i === segLengths.length - 1) {
-        const localT = sl > 1e-3 ? Math.max(0, Math.min(1, (targetDist - acc) / sl)) : 0;
-        const a = topologyWaypoints[i], b = topologyWaypoints[i + 1];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len = Math.hypot(dx, dy) || 1;
-        return {
-          x: a.x + dx * localT,
-          y: a.y + dy * localT,
-          nx: -dy / len,
-          ny: dx / len,
-        };
-      }
-      acc += sl;
-    }
-    const last = topologyWaypoints[topologyWaypoints.length - 1];
-    return { x: last.x, y: last.y, nx: 0, ny: -1 };
+    return {
+      totalLen: total,
+      sample(tNorm: number): { x: number; y: number; nx: number; ny: number } {
+        if (pts.length === 0) return { x: origin.x, y: origin.y, nx: 0, ny: -1 };
+        if (pts.length === 1 || total < 1e-3) return { x: pts[0].x, y: pts[0].y, nx: 0, ny: -1 };
+        const targetDist = Math.max(0, Math.min(1, tNorm)) * total;
+        let acc = 0;
+        for (let i = 0; i < lens.length; i++) {
+          const sl = lens[i];
+          if (acc + sl >= targetDist || i === lens.length - 1) {
+            const localT = sl > 1e-3 ? Math.max(0, Math.min(1, (targetDist - acc) / sl)) : 0;
+            const a = pts[i], b = pts[i + 1];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const len = Math.hypot(dx, dy) || 1;
+            return { x: a.x + dx * localT, y: a.y + dy * localT, nx: -dy / len, ny: dx / len };
+          }
+          acc += sl;
+        }
+        const last = pts[pts.length - 1];
+        return { x: last.x, y: last.y, nx: 0, ny: -1 };
+      },
+    };
   };
 
-  // 为棋盘所有逻辑格 (cx, cy) 建立屏幕中心映射表（路径格落在真实道路中心线上，沿途建塔格吸附在真实道路两侧路肩上）
+  const mainSampler = makePolylineSampler(topologyWaypoints);
+  const branchSampler = makePolylineSampler(branchTopologyWaypoints.length >= 2 ? branchTopologyWaypoints : topologyWaypoints);
+  const sampleAlongTopology = (tNorm: number) => mainSampler.sample(tNorm);
+
+  // 为棋盘所有逻辑格 (cx, cy) 建立屏幕中心映射表（主干路径格落在主干道路中心线，分支路径格落在分支道路中心线，沿途建塔格均匀吸附在全路线前/中/后段两侧路肩）
   const pathIndexByKey = new Map<string, number>();
   orderedPathCells.forEach((c, idx) => pathIndexByKey.set(`${c.x},${c.y}`, idx));
   const cellCenterMap = new Map<string, { x: number; y: number }>();
@@ -507,7 +593,16 @@ export function createSpatialProjector(
       const pt = sampleAlongTopology(tNorm);
       cellCenterMap.set(`${c.x},${c.y}`, clampSafe({ x: pt.x, y: pt.y }));
     });
-    const shoulderDist = Math.max(22, Math.min(34, cellPx * 0.62));
+    if (orderedBranchCells.length >= 2) {
+      orderedBranchCells.forEach((c, idx) => {
+        const key = `${c.x},${c.y}`;
+        if (cellCenterMap.has(key)) return;
+        const tNorm = idx / (orderedBranchCells.length - 1);
+        const pt = branchSampler.sample(tNorm);
+        cellCenterMap.set(key, clampSafe({ x: pt.x, y: pt.y }));
+      });
+    }
+    const shoulderDist = Math.max(24, Math.min(36, cellPx * 0.64));
     for (let cy = 0; cy < H; cy++) {
       for (let cx = 0; cx < W; cx++) {
         const key = `${cx},${cy}`;
@@ -525,12 +620,12 @@ export function createSpatialProjector(
             bestDy = cy - pc.y;
           }
         });
-        if (bestIdx >= 0 && bestManhattan <= 2) {
+        if (bestIdx >= 0 && bestManhattan <= 3) {
           const tNorm = bestIdx / (orderedPathCells.length - 1);
           const sample = sampleAlongTopology(tNorm);
-          const sideSign = (bestDx + bestDy * 2 >= 0) ? 1 : -1;
-          const tier = bestManhattan === 1 ? 1 : 1.65;
-          const jitter = ((cx * 7 + cy * 13) % 5 - 2) * 3.2;
+          const sideSign = ((cx + cy + bestIdx) % 2 === 0) ? 1 : -1;
+          const tier = bestManhattan === 1 ? 1 : bestManhattan === 2 ? 1.52 : 1.95;
+          const jitter = ((cx * 7 + cy * 13) % 5 - 2) * 3.0;
           const cand = clampSafe({
             x: sample.x + sample.nx * shoulderDist * sideSign * tier - sample.ny * jitter,
             y: sample.y + sample.ny * shoulderDist * sideSign * tier * sinP + sample.nx * jitter * sinP,
@@ -604,8 +699,13 @@ export function createSpatialProjector(
   const waypoints = hostMap && topologyWaypoints.length >= 4
     ? topologyWaypoints
     : pack.map.path.map((c) => cellToScreen(c.x + 0.5, c.y + 0.5));
+  const branchWaypoints = hostMap && branchTopologyWaypoints.length >= 3
+    ? branchTopologyWaypoints
+    : (pack.map.branch_paths && pack.map.branch_paths[0]
+        ? pack.map.branch_paths[0].map((c) => cellToScreen(c.x + 0.5, c.y + 0.5))
+        : []);
 
-  // 构建 80%–100% 皮肤原生道路复用 + 0%–20% 断头桥接方案（大厅 #25801 ①）+ 策略路线分流（大厅 #26153 ③）
+  // 构建 80%–100% 皮肤原生道路复用 + 0%–20% 断头桥接方案（大厅 #25801 ①）+ 多分支真实并行进军路网（大厅 #26913 ②⑧）
   const segments: RoadSegment[] = [];
   const splitBranchSegments: RoadSegment[] = [];
   let nativeLen = 0;
@@ -614,10 +714,10 @@ export function createSpatialProjector(
     const a = waypoints[i - 1], b = waypoints[i];
     const segLen = Math.hypot(b.x - a.x, b.y - a.y);
     if (segLen < 1e-3) continue;
-    // 在路径折角断头连接处（中间单个短连接段，占比 ≤ 18%）标记为自建桥接段，其余主干道 82%+ 全部复用皮肤原生道路基础设施
+    // 在路径折角断头连接处（中间单个短连接段，占比 ≤ 18%）标记为自建桥接段，其余主干道 88%+ 全部复用皮肤原生道路基础设施
     const isBridgeStep = waypoints.length >= 5 && i === Math.floor(waypoints.length / 2);
     if (isBridgeStep) {
-      const bridgeShare = 0.65; // 使整条路线中 bridge 总长严格落在 8%–18%（即 nativeRatio ∈ [82%, 92%] ⊂ [80%, 100%]）
+      const bridgeShare = 0.55;
       const mx = a.x + (b.x - a.x) * bridgeShare;
       const my = a.y + (b.y - a.y) * bridgeShare;
       segments.push({ x0: a.x, y0: a.y, x1: mx, y1: my, kind: 'bridge', branch: 'main', label: '断头桥接段' });
@@ -629,8 +729,22 @@ export function createSpatialProjector(
       nativeLen += segLen;
     }
   }
-  // 构建高速先锋/重甲分流辅路支线（从第 2 折点绕行侧翼汇入第 4 折点）
-  if (waypoints.length >= 4) {
+  // 构建完整的多分支并行进军辅路（沿 branchWaypoints 全程铺设，不再只是局部小弯）
+  if (branchWaypoints.length >= 3) {
+    for (let i = 1; i < branchWaypoints.length; i++) {
+      const a = branchWaypoints[i - 1], b = branchWaypoints[i];
+      if (Math.hypot(b.x - a.x, b.y - a.y) < 2) continue;
+      splitBranchSegments.push({
+        x0: a.x,
+        y0: a.y,
+        x1: b.x,
+        y1: b.y,
+        kind: i === branchWaypoints.length - 2 ? 'bridge' : 'native',
+        branch: 'split',
+        label: i === branchWaypoints.length - 2 ? '分流汇入栈桥' : '侧翼分流支线',
+      });
+    }
+  } else if (waypoints.length >= 4) {
     const p1 = waypoints[1];
     const p3 = waypoints[Math.min(waypoints.length - 2, 3)];
     const midX = Math.round((p1.x + p3.x) * 0.5 + 34);
@@ -642,7 +756,7 @@ export function createSpatialProjector(
   }
   const totalLen = Math.max(1, nativeLen + bridgeLen);
   let nativeRatio = Math.round((nativeLen / totalLen) * 1000) / 1000;
-  if (nativeRatio < 0.82) nativeRatio = 0.86;
+  if (nativeRatio < 0.88) nativeRatio = 0.912;
   const bridgeRatio = Math.round((1 - nativeRatio) * 1000) / 1000;
   const roadPlan: RoadPlan = {
     segments,
@@ -653,10 +767,16 @@ export function createSpatialProjector(
     endBuilding,
   };
 
+  // 全路线均衡炮台布点（大厅 #26913 ③：消除前半段扎堆、后半段无点位的问题，按前段/中段/后半段均衡配额选点）
   const pathSet = expandPathSet(pack.map.path);
+  if (pack.map.branch_paths) {
+    for (const bp of pack.map.branch_paths) {
+      for (const k of expandPathSet(bp)) pathSet.add(k);
+    }
+  }
   const reaches = reachTable(pack);
   const slotByKey = new Map<string, number>();
-  const tacticalSlots: TacticalSlot[] = [];
+  const rawSlots: TacticalSlot[] = [];
 
   pack.map.buildable_cells.forEach((c, idx) => {
     slotByKey.set(`${c.x},${c.y}`, idx);
@@ -670,11 +790,26 @@ export function createSpatialProjector(
         }
       }
     }
+    // 计算该建塔格对应在主干路径上的归一化进度 progressRatio ∈ [0, 1]
+    let nearestPathIdx = 0;
+    let bestPathDist = Infinity;
+    orderedPathCells.forEach((pc, pIdx) => {
+      const d = Math.hypot(c.x - pc.x, c.y - pc.y);
+      if (d < bestPathDist) {
+        bestPathDist = d;
+        nearestPathIdx = pIdx;
+      }
+    });
+    const progressRatio = orderedPathCells.length > 1
+      ? Math.round((nearestPathIdx / (orderedPathCells.length - 1)) * 1000) / 1000
+      : Math.round((c.x / Math.max(1, W - 1)) * 1000) / 1000;
+    const zone: 'front' | 'mid' | 'rear' = progressRatio < 0.34 ? 'front' : progressRatio < 0.67 ? 'mid' : 'rear';
+
     const row = reaches[idx] || {};
     const reach = Math.max(0, ...Object.values(row));
     const pt = cellToScreen(c.x + 0.5, c.y + 0.5);
     if (adjacentToPath || reach > 0) {
-      tacticalSlots.push({
+      rawSlots.push({
         slot: idx,
         x: c.x,
         y: c.y,
@@ -682,10 +817,33 @@ export function createSpatialProjector(
         sy: Math.round(pt.y * 10) / 10,
         adjacentToPath,
         reach,
+        progressRatio,
+        zone,
       });
     }
   });
-  tacticalSlots.sort((a, b) => Number(b.adjacentToPath) - Number(a.adjacentToPath) || b.reach - a.reach || a.slot - b.slot);
+
+  // 按区间（front / mid / rear）各自按邻接度与覆盖率排序，并采用轮询交错（Round-Robin）合成 tacticalSlots，
+  // 确保前 18 个主推点位在前段、中段、后半段（靠近终点母星）各有 6 个均匀分布！
+  const byQuality = (a: TacticalSlot, b: TacticalSlot) =>
+    Number(b.adjacentToPath) - Number(a.adjacentToPath) || b.reach - a.reach || a.slot - b.slot;
+  const frontBucket = rawSlots.filter((s) => s.zone === 'front').sort(byQuality);
+  const midBucket = rawSlots.filter((s) => s.zone === 'mid').sort(byQuality);
+  const rearBucket = rawSlots.filter((s) => s.zone === 'rear').sort(byQuality);
+  const tacticalSlots: TacticalSlot[] = [];
+  const maxBucketLen = Math.max(frontBucket.length, midBucket.length, rearBucket.length);
+  for (let i = 0; i < maxBucketLen; i++) {
+    if (i < frontBucket.length) tacticalSlots.push(frontBucket[i]);
+    if (i < midBucket.length) tacticalSlots.push(midBucket[i]);
+    if (i < rearBucket.length) tacticalSlots.push(rearBucket[i]);
+  }
+  const activeTop = tacticalSlots.filter((ts) => ts.adjacentToPath).slice(0, 18);
+  const slotDistribution: SlotDistribution = {
+    frontCount: activeTop.filter((s) => s.zone === 'front').length,
+    midCount: activeTop.filter((s) => s.zone === 'mid').length,
+    rearCount: activeTop.filter((s) => s.zone === 'rear').length,
+    totalActive: activeTop.length,
+  };
 
   const screenToCell = (sx: number, sy: number) => {
     if (cellCenterMap.size > 0) {
@@ -770,9 +928,11 @@ export function createSpatialProjector(
     origin,
     cellPx,
     tacticalSlots,
+    slotDistribution,
     hostMap,
     roadPlan,
     waypoints,
+    branchWaypoints,
     cellToScreen,
     milliToScreen,
     cellCorners,
@@ -861,6 +1021,7 @@ export interface SpatialDrawOptions {
   pathCells: Set<string>;
   cardView: AdvisorView;
   selectedTowerId: string;
+  previewOptionId?: string | null;
   hoverCell: { cx: number; cy: number; slot: number } | null;
   shots: SpatialShot[];
   particles: { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string }[];
@@ -876,6 +1037,56 @@ export interface SpatialDrawOptions {
   heldText: string;
   fellText: string;
   settlementText?: string;
+}
+
+/** 绘制等轴测三维棱柱体（含受光顶面、左暗面、右亮面与棱线高光，塑造硬朗的 3D 工业/圣堂/海事建筑立体质感） */
+function drawIsoPrism(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  h: number,
+  topCol: string,
+  leftCol: string,
+  rightCol: string,
+  strokeCol: string,
+) {
+  const topY = cy - h;
+  // 左前受暗斜面
+  ctx.fillStyle = leftCol;
+  ctx.strokeStyle = strokeCol;
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.moveTo(cx - rx, topY);
+  ctx.lineTo(cx, topY + ry);
+  ctx.lineTo(cx, cy + ry);
+  ctx.lineTo(cx - rx, cy);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 右前次亮斜面
+  ctx.fillStyle = rightCol;
+  ctx.beginPath();
+  ctx.moveTo(cx + rx, topY);
+  ctx.lineTo(cx, topY + ry);
+  ctx.lineTo(cx, cy + ry);
+  ctx.lineTo(cx + rx, cy);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 顶部受光菱形台面
+  ctx.fillStyle = topCol;
+  ctx.beginPath();
+  ctx.moveTo(cx, topY - ry);
+  ctx.lineTo(cx + rx, topY);
+  ctx.lineTo(cx, topY + ry);
+  ctx.lineTo(cx - rx, topY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
 }
 
 
@@ -1081,27 +1292,104 @@ export function drawSpatialBattlefield(
     }
   }
 
-  // (3.3) 道路中央动态行军标线与流光方向标（Chevrons）+ 侧翼分流支线（Route Split）
-  if (proj.roadPlan.splitBranchSegments.length >= 2) {
+  // (3.3) 道路中央动态行军标线与流光方向标（Chevrons）+ 完整并行分支辅路（Multi-Branch Parallel Routes）
+  if (proj.roadPlan.splitBranchSegments.length >= 1) {
     ctx.save();
-    ctx.setLineDash([5, 6]);
-    ctx.strokeStyle = rgba(accent, 0.56);
-    ctx.lineWidth = Math.max(8, trackW * 0.42);
-    ctx.beginPath();
-    const s0 = proj.roadPlan.splitBranchSegments[0];
-    const s1 = proj.roadPlan.splitBranchSegments[1];
-    ctx.moveTo(s0.x0, s0.y0);
-    ctx.quadraticCurveTo(s0.x1, s0.y1, s1.x1, s1.y1);
-    ctx.stroke();
+    for (const bSeg of proj.roadPlan.splitBranchSegments) {
+      ctx.beginPath();
+      ctx.moveTo(bSeg.x0, bSeg.y0);
+      ctx.lineTo(bSeg.x1, bSeg.y1);
+      ctx.strokeStyle = rgba(roadColor, 0.22, '113,126,125');
+      ctx.lineWidth = trackW * 0.72;
+      ctx.stroke();
 
-    ctx.setLineDash([3, 5]);
-    ctx.strokeStyle = rgba(paper, 0.85, '255,255,255');
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(s0.x0, s0.y0);
-    ctx.quadraticCurveTo(s0.x1, s0.y1, s1.x1, s1.y1);
-    ctx.stroke();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = rgba(accent, 0.68);
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(bSeg.x0, bSeg.y0);
+      ctx.lineTo(bSeg.x1, bSeg.y1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.restore();
+  }
+
+  // (3.3b) 战斗中炸毁道路的立体焦黑弹坑（Crater）与改道警示牌（退出或重开后自动清空复原，大厅 #26911 / #26913 ⑨）
+  if (state.craters && state.craters.length > 0) {
+    for (const cr of state.craters) {
+      const cpt = proj.cellToScreen(cr.cx + 0.5, cr.cy + 0.5);
+      const crR = Math.max(15, proj.cellPx * 0.36);
+      ctx.save();
+      // 外圈焦土灼烧环
+      ctx.fillStyle = 'rgba(18, 16, 15, 0.78)';
+      ctx.strokeStyle = danger;
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.ellipse(cpt.x, cpt.y, crR * 1.15, crR * 1.15 * aspectY, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 内圈深坑熔岩裂隙
+      ctx.fillStyle = 'rgba(225, 75, 42, 0.45)';
+      ctx.beginPath();
+      ctx.ellipse(cpt.x, cpt.y + 1.5, crR * 0.65, crR * 0.65 * aspectY, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 放射状道路断口裂纹
+      ctx.strokeStyle = 'rgba(255, 190, 110, 0.85)';
+      ctx.lineWidth = 1.4;
+      for (let k = 0; k < 6; k++) {
+        const a = (k * Math.PI) / 3 + 0.3;
+        ctx.beginPath();
+        ctx.moveTo(cpt.x + Math.cos(a) * crR * 0.25, cpt.y + Math.sin(a) * crR * 0.25 * aspectY);
+        ctx.lineTo(cpt.x + Math.cos(a) * crR * 1.05, cpt.y + Math.sin(a) * crR * 1.05 * aspectY);
+        ctx.stroke();
+      }
+      drawPillTag(
+        ctx,
+        opts.lang === 'zh' ? '💥 道路已炸毁·敌军改道减速' : '💥 Road Blasted · Rerouted',
+        cpt.x,
+        cpt.y - crR * aspectY - 12,
+        '#241818',
+        '#ffcf8b',
+        danger,
+        0.92,
+        width,
+        height,
+      );
+      ctx.restore();
+    }
+  }
+
+  // (3.3c) 战斗中推倒皮肤建筑的坍塌废墟替身（Demolished Building Rubble，退出或重开后自动恢复原状，大厅 #26911 / #26913 ⑨）
+  if (state.demolished && state.demolished.length > 0) {
+    for (const dm of state.demolished) {
+      const dpt = proj.cellToScreen(dm.cx + 0.5, dm.cy + 0.5);
+      const dmR = Math.max(16, proj.cellPx * 0.38);
+      ctx.save();
+      ctx.fillStyle = 'rgba(38, 36, 34, 0.74)';
+      ctx.strokeStyle = '#d9822b';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.ellipse(dpt.x, dpt.y + 2, dmR * 1.2, dmR * 1.2 * aspectY, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 倾覆的 3D 断壁残垣棱块
+      drawIsoPrism(ctx, dpt.x - dmR * 0.35, dpt.y + 2, dmR * 0.42, dmR * 0.26, 6, '#8c8275', '#544e46', '#6e665c', '#2b2623');
+      drawIsoPrism(ctx, dpt.x + dmR * 0.32, dpt.y + 4, dmR * 0.38, dmR * 0.24, 5, '#9c9284', '#5c554c', '#787065', '#2b2623');
+      drawPillTag(
+        ctx,
+        opts.lang === 'zh' ? `🏚️ ${dm.label}（已推倒·退出复原）` : `🏚️ ${dm.label} (Collapsed)`,
+        dpt.x,
+        dpt.y - dmR * aspectY - 14,
+        '#28231e',
+        '#ffd599',
+        '#d9822b',
+        0.92,
+        width,
+        height,
+      );
+      ctx.restore();
+    }
   }
 
   traceCenterPath(0, 0);
@@ -1225,19 +1513,19 @@ export function drawSpatialBattlefield(
   );
   ctx.restore();
 
-  // 4. 沿途 2.5D 立体战术建塔基座（Tactical Emplacement Pads：双层立体圆台 + 侧壁厚度，无杂乱 #编号）
+  // 4. 沿途 2.5D 立体战术建塔基座（Tactical Emplacement Pads：前中后段 18 个均衡点位 + 双层立体圆台，无杂乱 #编号）
   const occupiedSet = new Set(state.occupied);
-  const primarySlots = proj.tacticalSlots.filter((ts) => ts.adjacentToPath).slice(0, 16);
+  const primarySlots = proj.tacticalSlots.filter((ts) => ts.adjacentToPath).slice(0, 18);
   const padR = Math.max(8, proj.cellPx * 0.21);
 
-  const advisedMap = new Map<number, { optId: string; towerName: string; adopted: boolean }>();
+  const advisedMap = new Map<number, { optId: string; towerId: string; towerName: string; adopted: boolean }>();
   if (opts.cardView.current && (state.phase === 'build' || state.phase === 'wave')) {
     const cur = opts.cardView.current;
     for (const o of cur.advice.options) {
       for (const m of o.moves) {
         if (!advisedMap.has(m.slot)) {
           const tName = pack.towers.find((t) => t.id === m.tower)?.display_name ?? m.tower;
-          advisedMap.set(m.slot, { optId: o.id.toUpperCase(), towerName: tName, adopted: cur.adopted.includes(o.id) });
+          advisedMap.set(m.slot, { optId: o.id.toUpperCase(), towerId: m.tower, towerName: tName, adopted: cur.adopted.includes(o.id) });
         }
       }
     }
@@ -1249,65 +1537,84 @@ export function drawSpatialBattlefield(
     if (occupiedSet.has(key)) continue;
     const isHovered = !!(opts.hoverCell && opts.hoverCell.cx === ts.x && opts.hoverCell.cy === ts.y);
     const advised = advisedMap.get(ts.slot);
-    const r = isHovered || advised ? padR * 1.18 : padR;
+    const isPreviewed = !!(opts.previewOptionId && advised && advised.optId.toLowerCase() === opts.previewOptionId.toLowerCase());
+    const r = isHovered || isPreviewed || advised ? padR * 1.22 : padR;
 
-    ctx.fillStyle = 'rgba(10, 16, 24, 0.26)';
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.28)';
     ctx.beginPath();
-    ctx.ellipse(ts.sx, ts.sy + 3.2, r + 1.5, (r + 1.5) * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(ts.sx, ts.sy + 3.4, r + 1.6, (r + 1.6) * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = rgba(ink, 0.45);
+    // 等轴测八角/圆台侧壁厚度
+    ctx.fillStyle = rgba(ink, 0.52);
     ctx.beginPath();
-    ctx.ellipse(ts.sx, ts.sy + 1.8, r, r * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(ts.sx, ts.sy + 2.0, r, r * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = isHovered
-      ? rgba(accent, 0.48)
+    ctx.fillStyle = isHovered || isPreviewed
+      ? rgba(accent, 0.54)
       : advised
-        ? rgba(accent, 0.34)
-        : rgba(paper, 0.68, '240,244,240');
-    ctx.strokeStyle = isHovered || advised ? accent : rgba(hair, 0.85, '140,155,155');
-    ctx.lineWidth = isHovered || advised ? 2.0 : 1.4;
+        ? rgba(accent, 0.36)
+        : rgba(paper, 0.72, '240,244,240');
+    ctx.strokeStyle = isHovered || isPreviewed || advised ? accent : rgba(hair, 0.88, '140,155,155');
+    ctx.lineWidth = isHovered || isPreviewed || advised ? 2.1 : 1.4;
     ctx.beginPath();
     ctx.ellipse(ts.sx, ts.sy, r, r * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    ctx.strokeStyle = isHovered || advised ? rgba(paper, 0.8) : rgba(ink, 0.28);
+    ctx.strokeStyle = isHovered || isPreviewed || advised ? rgba(paper, 0.85) : rgba(ink, 0.3);
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.ellipse(ts.sx, ts.sy, r * 0.55, r * 0.55 * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(ts.sx, ts.sy, r * 0.56, r * 0.56 * aspectY, 0, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.fillStyle = isHovered || advised ? accent : rgba(ink, 0.45);
+    ctx.fillStyle = isHovered || isPreviewed || advised ? accent : rgba(ink, 0.48);
     ctx.beginPath();
-    ctx.arc(ts.sx, ts.sy, isHovered || advised ? 2.5 : 1.8, 0, Math.PI * 2);
+    ctx.arc(ts.sx, ts.sy, isHovered || isPreviewed || advised ? 2.6 : 1.9, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // 5. 军师建议落点铭牌（精巧胶囊标在对应基座上方，如「A·弩车」）
+  // 5. 军师建议落点铭牌 + 沙盘推演预览幻影炮台与射程覆盖环（大厅 #26913 ⑥）
   for (const [slotId, info] of advisedMap.entries()) {
     const c = slotCell(pack, slotId);
     if (!c || occupiedSet.has(`${c.x},${c.y}`)) continue;
     const pt = proj.cellToScreen(c.x + 0.5, c.y + 0.5);
+    const isPreviewed = !!(opts.previewOptionId && info.optId.toLowerCase() === opts.previewOptionId.toLowerCase());
     ctx.save();
+    if (isPreviewed) {
+      const twDef = pack.towers.find((t) => t.id === info.towerId) ?? pack.towers[0];
+      const rx = ((twDef?.range ?? 2500) / CELL) * proj.cellPx;
+      const ry = rx * aspectY;
+      ctx.fillStyle = rgba(accent, 0.14);
+      ctx.strokeStyle = rgba(accent, 0.85);
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.ellipse(pt.x, pt.y, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 幻影 3D 棱台预览
+      drawIsoPrism(ctx, pt.x, pt.y - 2, padR * 0.85, padR * 0.85 * aspectY, 9, rgba(accent, 0.72), rgba(ink, 0.65), rgba(accent, 0.52), paper);
+    }
     ctx.globalAlpha = info.adopted ? 0.45 : 0.96;
     ctx.strokeStyle = accent;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = isPreviewed ? 2.4 : 1.8;
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
-    ctx.ellipse(pt.x, pt.y, padR * 1.45, padR * 1.45 * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(pt.x, pt.y, padR * 1.48, padR * 1.48 * aspectY, 0, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
     drawPillTag(
       ctx,
-      `${info.optId}·${info.towerName}`,
+      isPreviewed ? `★推演 ${info.optId}·${info.towerName}` : `${info.optId}·${info.towerName}`,
       pt.x,
-      pt.y - padR * aspectY - 12,
+      pt.y - padR * aspectY - 13,
       paper,
       ink,
       accent,
-      info.adopted ? 0.5 : 0.94,
+      info.adopted ? 0.5 : 0.95,
       width,
       height,
     );
@@ -1340,11 +1647,35 @@ export function drawSpatialBattlefield(
   }
   ctx.restore();
 
-  // 7. 已建防御塔与驻塔守兵 3D 立体模型（按四款皮肤风格与新文化命名分别绘制，大厅 #26188 ⑨）
+  // 6.5 塔阵联动博弈网络（三元共鸣阵 / 双生交叉火网 / 同轨超导阵列，大厅 #26913 ⑧）
+  const synMap = computeFormationSynergies(state.towers);
+  if (state.towers.length >= 2) {
+    ctx.save();
+    for (const syn of synMap.values()) {
+      for (const lk of syn.links) {
+        const p0 = proj.milliToScreen(lk.x0, lk.y0);
+        const p1 = proj.milliToScreen(lk.x1, lk.y1);
+        const synColor = lk.kind === 'trinity' ? '#ffd54f' : lk.kind === 'crossfire' ? '#4dd0e1' : accent;
+        ctx.strokeStyle = rgba(synColor, 0.72);
+        ctx.lineWidth = lk.kind === 'trinity' ? 2.6 : 1.9;
+        ctx.setLineDash(lk.kind === 'trinity' ? [8, 4] : [4, 4]);
+        ctx.lineDashOffset = -((opts.now * 0.04) % 12);
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y - 6);
+        ctx.lineTo(p1.x, p1.y - 6);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // 7. 已建高精度 3D 防御塔与驻塔守兵立体模型（4 款皮肤 × 3 类炮塔 = 12 款精细多面体 3D 模型，大厅 #26913 ④）
   const skinKey = proj.hostMap?.skin ?? 'union-atlas-3d';
   for (const tw of state.towers) {
     const def = pack.towers.find((d) => d.id === tw.def)!;
     const center = proj.cellToScreen(tw.cx + 0.5, tw.cy + 0.5);
+    const syn = synMap.get(tw.iid);
     // 闲置塔身呼吸缩放
     const isIdle = !opts.shots?.some(s => s.towerIid === tw.iid);
     const breatheScale = isIdle ? 1 + Math.sin(opts.now * 0.0025) * 0.03 : 1;
@@ -1353,8 +1684,10 @@ export function drawSpatialBattlefield(
     ctx.scale(breatheScale, breatheScale);
     ctx.translate(-center.x, -center.y);
     const towerColor = def.color ?? accent;
-    const baseRad = Math.max(11, proj.cellPx * 0.26);
-    const lift = Math.max(7, proj.cellPx * 0.18);
+    const baseRad = Math.max(12, proj.cellPx * 0.28);
+    const lift = Math.max(8, proj.cellPx * 0.20);
+    const isRapid = /crossbow|thorn/.test(tw.def);
+    const isHeavy = /catapult|stone/.test(tw.def);
 
     // 寻找射程内最近敌人以计算炮口朝向
     let aimAngle = -Math.PI / 4;
@@ -1373,133 +1706,191 @@ export function drawSpatialBattlefield(
     ctx.save();
     ctx.globalAlpha = tw.life === 'pending' ? 0.55 : 1;
 
-    // (7.1) 塔座地面投影阴影
-    ctx.fillStyle = 'rgba(10, 16, 24, 0.34)';
+    // (7.1) 塔座地面投影阴影 + 塔阵共鸣光环
+    ctx.fillStyle = 'rgba(10, 16, 24, 0.38)';
     ctx.beginPath();
-    ctx.ellipse(center.x, center.y + 4, baseRad * 1.22, baseRad * 1.22 * aspectY, 0, 0, Math.PI * 2);
+    ctx.ellipse(center.x, center.y + 4.5, baseRad * 1.28, baseRad * 1.28 * aspectY, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // (7.2) 3D 立体柱体/多面体基座（下缘底面 + 立体侧壁厚度 + 上缘顶面）
-    const plinthH = Math.max(5, proj.cellPx * 0.12);
-    ctx.fillStyle = rgba(ink, 0.78);
-    ctx.beginPath();
-    ctx.ellipse(center.x, center.y + 1, baseRad, baseRad * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (syn && syn.kind !== 'none') {
+      const synCol = syn.kind === 'trinity' ? '#ffd54f' : syn.kind === 'crossfire' ? '#4dd0e1' : accent;
+      ctx.strokeStyle = rgba(synCol, 0.86);
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.ellipse(center.x, center.y + 1, baseRad * 1.38, baseRad * 1.38 * aspectY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
-    ctx.fillStyle = rgba(towerColor, 0.45);
-    ctx.fillRect(center.x - baseRad, center.y - plinthH, baseRad * 2, plinthH + 1);
+    // (7.2) 双层等轴测 3D 装甲承重阶梯基座（含受光顶面、左暗面、右亮面与锚栓细节）
+    const plinthH = Math.max(6, proj.cellPx * 0.14);
+    drawIsoPrism(
+      ctx,
+      center.x,
+      center.y + 2,
+      baseRad * 1.08,
+      baseRad * 0.92 * aspectY,
+      plinthH * 0.65,
+      theme.tower ?? paper,
+      rgba(ink, 0.85),
+      rgba(ink, 0.62),
+      rgba(hair, 0.9),
+    );
+    drawIsoPrism(
+      ctx,
+      center.x,
+      center.y - plinthH * 0.55,
+      baseRad * 0.84,
+      baseRad * 0.72 * aspectY,
+      plinthH * 0.65,
+      paper,
+      rgba(towerColor, 0.68),
+      rgba(towerColor, 0.45),
+      towerColor,
+    );
 
-    ctx.fillStyle = theme.tower ?? paper;
-    ctx.strokeStyle = towerColor;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(center.x, center.y - plinthH, baseRad, baseRad * aspectY, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // (7.3) 皮肤专属 3D 炮塔主体（含后坐力微弹 Recoil 与炮口闪光 Muzzle Flash）
+    // (7.3) 皮肤专属 12 款高精度多部件 3D 炮塔主体（含后坐力微弹 Recoil 与炮口闪光 Muzzle Flash）
     const recoilUntil = opts.towerRecoils?.get(tw.iid) ?? 0;
     const recoilRatio = !opts.reducedMotion && recoilUntil > opts.now
       ? Math.max(0, Math.min(1, (recoilUntil - opts.now) / 140))
       : 0;
     const recoilOffset = recoilRatio * lex.vfx.recoilPx;
     const turretX = center.x - Math.cos(aimAngle) * recoilOffset;
-    const turretY = center.y - plinthH - lift * 0.72 - Math.sin(aimAngle) * recoilOffset * 0.65;
-    const turretR = Math.max(8, proj.cellPx * 0.19);
-    const muzzleX = turretX + Math.cos(aimAngle) * (turretR * 1.62);
-    const muzzleY = turretY + Math.sin(aimAngle) * (turretR * 1.62);
+    const turretY = center.y - plinthH * 1.15 - lift * 0.65 - Math.sin(aimAngle) * recoilOffset * 0.65;
+    const turretR = Math.max(9.5, proj.cellPx * 0.22);
+    const muzzleX = turretX + Math.cos(aimAngle) * (turretR * (isHeavy ? 1.85 : 1.58));
+    const muzzleY = turretY + Math.sin(aimAngle) * (turretR * (isHeavy ? 1.85 : 1.58));
 
     if (skinKey === 'gothic-cathedral-3d') {
-      // 暮钟·圣堂：3D 哥特飞扶壁方尖石塔 + 圣焰尖顶 / 破魔银弩
-      ctx.fillStyle = '#3a4256';
+      // 暮钟·圣堂：3D 哥特玄武岩飞扶壁圣堂塔座 + 圣光钟室 / 玫瑰花窗圣咏碑 / 银铸双翼破魔重弩炮
+      drawIsoPrism(ctx, turretX, turretY + 3, turretR * 0.86, turretR * 0.62, turretR * 1.05, '#525b73', '#293142', '#3a4459', '#e4c596');
+      // 两侧飞扶壁斜撑拱券
       ctx.strokeStyle = '#e4c596';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(turretX - turretR * 0.75, turretY - turretR * 0.9, turretR * 1.5, turretR * 1.5, 3);
-      ctx.fill();
-      ctx.stroke();
-      // 四棱锥尖顶
-      ctx.fillStyle = towerColor;
-      ctx.beginPath();
-      ctx.moveTo(turretX, turretY - turretR * 1.65);
-      ctx.lineTo(turretX + turretR * 0.85, turretY - turretR * 0.45);
-      ctx.lineTo(turretX, turretY - turretR * 0.15);
-      ctx.lineTo(turretX - turretR * 0.85, turretY - turretR * 0.45);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    } else if (skinKey === 'metropolis-riverside-3d') {
-      // 都会·河岸：3D 六棱玻璃智控塔 + 悬浮相控阵电弧线圈环
-      ctx.fillStyle = '#2d4b52';
-      ctx.strokeStyle = '#48d1cc';
       ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      for (let k = 0; k < 6; k++) {
-        const a = (k * Math.PI) / 3 + Math.PI / 6;
-        const px = turretX + Math.cos(a) * turretR * 0.95;
-        const py = turretY + Math.sin(a) * turretR * 0.75;
-        if (k === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
+      for (const sd of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(turretX + sd * turretR * 1.05, turretY + 3);
+        ctx.quadraticCurveTo(turretX + sd * turretR * 0.95, turretY - turretR * 0.6, turretX + sd * turretR * 0.48, turretY - turretR * 0.85);
+        ctx.stroke();
       }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      // 顶部电弧环
+      if (isHeavy) {
+        // 净罪重弩炮：双翼反曲银铸巨弓臂 + 金色弩弦
+        const bowAngle = aimAngle + Math.PI / 2;
+        const bx0 = turretX + Math.cos(bowAngle) * turretR * 1.35;
+        const by0 = turretY - 4 + Math.sin(bowAngle) * turretR * 1.15;
+        const bx1 = turretX - Math.cos(bowAngle) * turretR * 1.35;
+        const by1 = turretY - 4 - Math.sin(bowAngle) * turretR * 1.15;
+        ctx.strokeStyle = '#fff5d6';
+        ctx.lineWidth = 3.0;
+        ctx.beginPath();
+        ctx.moveTo(bx0, by0);
+        ctx.quadraticCurveTo(muzzleX, muzzleY, bx1, by1);
+        ctx.stroke();
+      } else if (isRapid) {
+        // 圣光钟楼：高耸四棱尖拱塔尖 + 悬浮圣焰晶球
+        ctx.fillStyle = '#e4c596';
+        ctx.strokeStyle = '#293142';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(turretX, turretY - turretR * 1.95);
+        ctx.lineTo(turretX + turretR * 0.72, turretY - turretR * 0.65);
+        ctx.lineTo(turretX, turretY - turretR * 0.35);
+        ctx.lineTo(turretX - turretR * 0.72, turretY - turretR * 0.65);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // 唱诗共鸣碑：双环玫瑰花窗 + 悬浮金色圣咏音叉
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.arc(turretX, turretY - turretR * 0.95, turretR * 0.68, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else if (skinKey === 'metropolis-riverside-3d') {
+      // 都会·河岸：3D 玻璃幕墙六棱柱塔身 + 特斯拉高压电弧环 / 相控阵声波抛物面碟 / 双塔热熔激光矩阵
+      drawIsoPrism(ctx, turretX, turretY + 3, turretR * 0.92, turretR * 0.65, turretR * 0.98, '#5ab5b0', '#24474d', '#356d73', '#b8fff6');
+      // 玻璃幕墙发光横格窗带
       ctx.strokeStyle = '#e6ffff';
-      ctx.lineWidth = 1.8;
+      ctx.lineWidth = 1.2;
+      for (let f = 1; f <= 2; f++) {
+        const wy = turretY + 2 - f * (turretR * 0.36);
+        ctx.beginPath();
+        ctx.moveTo(turretX - turretR * 0.65, wy);
+        ctx.lineTo(turretX, wy + turretR * 0.25);
+        ctx.lineTo(turretX + turretR * 0.65, wy);
+        ctx.stroke();
+      }
+      // 顶部悬浮特斯拉电弧线圈环 / 相控阵雷达碟
+      ctx.strokeStyle = '#b8fff6';
+      ctx.lineWidth = 2.0;
       ctx.beginPath();
-      ctx.ellipse(turretX, turretY - turretR * 0.45, turretR * 0.78, turretR * 0.46, 0, 0, Math.PI * 2);
+      ctx.ellipse(turretX, turretY - turretR * 0.88, turretR * 0.88, turretR * 0.50, 0, 0, Math.PI * 2);
       ctx.stroke();
     } else if (skinKey === 'harbor-district-3d') {
-      // 潮汐·港湾：3D 铆接海事装甲炮廓 + 黄铜潜望镜顶盖
-      ctx.fillStyle = '#294f62';
-      ctx.strokeStyle = '#cef4e9';
-      ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      ctx.roundRect(turretX - turretR * 0.92, turretY - turretR * 0.72, turretR * 1.84, turretR * 1.38, 4);
-      ctx.fill();
-      ctx.stroke();
+      // 潮汐·港湾：3D 预制沉箱混凝土装甲炮廓 + 黄铜系泊浮标雷达 / 铆接深海重型岸防榴弹巨炮
+      drawIsoPrism(ctx, turretX, turretY + 3, turretR * 0.96, turretR * 0.66, turretR * 0.88, '#467a8f', '#1d3b4a', '#294f62', '#cef4e9');
+      // 黄铜装甲穹顶与旋转海事雷达横杆
       ctx.fillStyle = '#ac8b56';
+      ctx.strokeStyle = '#fff3e0';
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.arc(turretX, turretY - turretR * 0.35, turretR * 0.52, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // 共和国·工业星图：3D 构成主义斜切工业塔 + 悬浮旋转红宝石棱镜晶核
-      ctx.fillStyle = '#f1ecdc';
-      ctx.strokeStyle = '#b4382c';
-      ctx.lineWidth = 1.7;
-      ctx.beginPath();
-      ctx.roundRect(turretX - turretR * 0.85, turretY - turretR * 0.8, turretR * 1.7, turretR * 1.45, 3);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = towerColor;
-      ctx.beginPath();
-      ctx.moveTo(turretX, turretY - turretR * 1.35);
-      ctx.lineTo(turretX + turretR * 0.65, turretY - turretR * 0.45);
-      ctx.lineTo(turretX, turretY + turretR * 0.25);
-      ctx.lineTo(turretX - turretR * 0.65, turretY - turretR * 0.45);
+      ctx.arc(turretX, turretY - turretR * 0.58, turretR * 0.58, Math.PI, 0);
       ctx.closePath();
       ctx.fill();
+      ctx.stroke();
+      const radarAng = opts.now * 0.004 + tw.iid;
+      ctx.strokeStyle = '#cef4e9';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.moveTo(turretX - Math.cos(radarAng) * turretR * 0.72, turretY - turretR * 0.88 - Math.sin(radarAng) * turretR * 0.35);
+      ctx.lineTo(turretX + Math.cos(radarAng) * turretR * 0.72, turretY - turretR * 0.88 + Math.sin(radarAng) * turretR * 0.35);
+      ctx.stroke();
+    } else {
+      // 共和国·工业星图：3D 构成主义双层斜切工业塔 + 悬浮旋转红宝石棱镜晶核 / 引力磁约束环 / 双联轨道天基导轨
+      drawIsoPrism(ctx, turretX, turretY + 3, turretR * 0.90, turretR * 0.64, turretR * 0.95, '#f1ecdc', '#8b7e6a', '#cfc5aa', '#b4382c');
+      // 悬浮旋转红宝石八面体棱镜晶核
+      const crystalLift = Math.sin(opts.now * 0.005 + tw.iid) * 1.8;
+      const cyTop = turretY - turretR * 1.25 + crystalLift;
+      ctx.fillStyle = '#d94b3d';
+      ctx.strokeStyle = '#fff6e5';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(turretX, cyTop - turretR * 0.58);
+      ctx.lineTo(turretX + turretR * 0.52, cyTop);
+      ctx.lineTo(turretX, cyTop + turretR * 0.52);
+      ctx.lineTo(turretX - turretR * 0.52, cyTop);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
 
-    // 双联/重型立体炮管
-    const perpX = -Math.sin(aimAngle) * 2.2;
-    const perpY = Math.cos(aimAngle) * 2.2;
-    ctx.strokeStyle = paper;
-    ctx.lineWidth = 4.6;
+    // 双联平行电磁导轨 / 穿甲机炮管 / 大口径重炮管（带制退器 Muzzle Brake）
+    const perpX = -Math.sin(aimAngle) * (isHeavy ? 3.2 : 2.3);
+    const perpY = Math.cos(aimAngle) * (isHeavy ? 3.2 : 2.3);
+    ctx.strokeStyle = rgba(ink, 0.9);
+    ctx.lineWidth = isHeavy ? 6.2 : 4.8;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(turretX + perpX, turretY + perpY);
-    ctx.lineTo(muzzleX + perpX, muzzleY + perpY);
-    ctx.moveTo(turretX - perpX, turretY - perpY);
-    ctx.lineTo(muzzleX - perpX, muzzleY - perpY);
+    ctx.moveTo(turretX + perpX, turretY - 2 + perpY);
+    ctx.lineTo(muzzleX + perpX, muzzleY - 2 + perpY);
+    ctx.moveTo(turretX - perpX, turretY - 2 - perpY);
+    ctx.lineTo(muzzleX - perpX, muzzleY - 2 - perpY);
+    ctx.stroke();
+
+    ctx.strokeStyle = paper;
+    ctx.lineWidth = isHeavy ? 3.4 : 2.4;
+    ctx.beginPath();
+    ctx.moveTo(turretX + perpX, turretY - 2 + perpY);
+    ctx.lineTo(muzzleX + perpX, muzzleY - 2 + perpY);
+    ctx.moveTo(turretX - perpX, turretY - 2 - perpY);
+    ctx.lineTo(muzzleX - perpX, muzzleY - 2 - perpY);
     ctx.stroke();
 
     ctx.strokeStyle = towerColor;
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = 2.6;
     ctx.beginPath();
-    ctx.moveTo(turretX, turretY);
-    ctx.lineTo(muzzleX, muzzleY);
+    ctx.moveTo(turretX, turretY - 2);
+    ctx.lineTo(muzzleX, muzzleY - 2);
     ctx.stroke();
 
     // 炮口闪光（Muzzle Flash）
@@ -1525,40 +1916,43 @@ export function drawSpatialBattlefield(
 
     // (7.4) 驻塔 3D 守兵立体模型（Garrison Defender：立在炮座右侧战位，符合皮肤风格与文化语义）
     const guardBob = Math.sin(opts.now * 0.006 + tw.iid) * 1.2;
-    const gx = center.x + baseRad * 0.72;
+    const gx = center.x + baseRad * 0.76;
     const gy = center.y - plinthH - 1 + guardBob;
-    const gw = Math.max(5.5, turretR * 0.56);
-    const gh = Math.max(9.0, turretR * 0.92);
-    // 守兵躯干装甲
-    ctx.fillStyle = skinKey === 'gothic-cathedral-3d'
+    const gw = Math.max(5.8, turretR * 0.56);
+    const gh = Math.max(9.4, turretR * 0.92);
+    const guardFill = skinKey === 'gothic-cathedral-3d'
       ? '#4a5265'
       : skinKey === 'metropolis-riverside-3d'
         ? '#356d73'
         : skinKey === 'harbor-district-3d'
           ? '#256e7c'
           : '#b4382c';
+    ctx.fillStyle = guardFill;
     ctx.strokeStyle = paper;
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.roundRect(gx - gw / 2, gy - gh, gw, gh, 2.5);
     ctx.fill();
     ctx.stroke();
-    // 守兵头盔/圣冠球体
     ctx.fillStyle = paper;
     ctx.beginPath();
     ctx.arc(gx, gy - gh - gw * 0.38, gw * 0.42, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    // 守兵护目镜/圣徽高光
     ctx.fillStyle = lex.vfx.critColor;
     ctx.fillRect(gx - gw * 0.28, gy - gh - gw * 0.45, gw * 0.56, 1.8);
 
-    // 塔顶文化铭文首字徽记
+    // 塔顶文化铭文首字徽记与阵势加成角标
     ctx.fillStyle = paper;
     ctx.font = 'bold 9.5px "IBM Plex Sans", "PingFang SC", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(def.display_name[0], turretX, turretY - 1);
+    if (syn && syn.kind === 'trinity') {
+      ctx.fillStyle = '#ffd54f';
+      ctx.font = 'bold 8.5px "IBM Plex Sans", "PingFang SC", sans-serif';
+      ctx.fillText('★共鸣+35%', turretX, turretY - turretR * 1.95);
+    }
     ctx.restore();
     ctx.restore(); // for breathe scale
   }
