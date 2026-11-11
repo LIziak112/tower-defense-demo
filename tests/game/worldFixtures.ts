@@ -1,6 +1,27 @@
 // 世界战场测试用的地图夹具（合成的街道网；真实宿主导出的四款皮肤见 tests/fixtures/world/*.json）
 import { parseWorldMap, type HostWorldMap, type WorldRoad } from '../../src/game/worldField';
 
+/**
+ * 一条东西向的直路（宽 w），路边三栋楼，各自的门口引道从不同方向接上这条路：
+ *   side  在路北侧，引道垂直拐上路面；
+ *   back  在路西端的背后斜上方，引道从路的起点背后斜着接上来；
+ *   home  在路南侧（终点），路面垂直拐进它的引道。
+ * 用来查「引道与路面相接的拐角」：路窄的时候倒角不能露到路缘外面。
+ */
+export function laneFixture(w: number, spawn: 'side' | 'back' = 'side'): HostWorldMap {
+  return parseWorldMap({
+    v: 2, skin: 'test-lane', layout: 'lane', scene: 'test',
+    bounds: { minX: -80, maxX: 70, minZ: -30, maxZ: 30 },
+    roads: [{ id: 'lane', kind: 'path', w, pts: [[-60, 0.1, 0], [0, 0.1, 0], [60, 0.1, 0]] }],
+    places: [
+      { key: 'home', kind: 'home', label: '母星', x: 50, z: -9, r: 3 },
+      spawn === 'side' ? { key: 'side', kind: 'entity', label: '路边小楼', x: -50, z: 8, r: 3 } : { key: 'back', kind: 'entity', label: '路口小楼', x: -64, z: 8, r: 2 },
+    ],
+    blocks: [],
+    water: [],
+  })!;
+}
+
 /** 仿 river-grid（共和国·工业星图）的街道网：横街被河断成两段、每隔一条有桥，中间一块市政广场 */
 export function gridCityFixture(): HostWorldMap {
   const roads: WorldRoad[] = [];
