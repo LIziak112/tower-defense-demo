@@ -13,7 +13,7 @@ import type { ContentPack } from '../runtime/index';
 import { expandPath } from '../content/validate';
 import { createHostBridge, type GameState, type HostCamera, type HostContext, type HostGround, type HostSettlementReply } from './hikos';
 import { buildWorldField, milliToWorld, packForField, routePoint, type HostWorldMap, type WorldField } from './worldField';
-import { arcOf, encodeField, encodeFrame, groundOf, padPoints, pickPad, projectWorld, routeIndex, routeMilli, routeWorld, type WorldFx, type WorldPoint } from './worldMode';
+import { arcOf, encodeField, encodeFrame, groundOf, heightNear, padPoints, pickPad, projectWorld, routeIndex, routeMilli, routeWorld, type WorldFx, type WorldPoint } from './worldMode';
 import { paletteForContext } from './skins';
 import { AdvisorSession, HostChannel, selectChannel, type AdvisorAgent, type AdvisorView } from '../advisor/index';
 import { slotCell } from '../advisor/snapshot';
@@ -963,21 +963,11 @@ function routeWorldAt(branch: number | undefined, progress: number): WorldPoint 
   return route ? routeWorld(route, arcOf(f, fieldMilli(), ri, progress), groundOf(f, hostGround, ri)) : null;
 }
 
-/** 模拟坐标（毫格）→ 世界坐标；高度取路线上最近的折点（塔位 / 命中点都在路面附近） */
+/** 模拟坐标（毫格）→ 世界坐标；高度取路线上离它最近的地方的路面高度（塔位 / 命中点都在路面附近），见 heightNear */
 function milliWorld(mx: number, my: number): WorldPoint {
   const f = worldField!;
   const p = milliToWorld(f, mx, my);
-  let y = 0, bd = Infinity;
-  f.routes.forEach((r, ri) => {
-    const ys = groundOf(f, hostGround, ri);
-    r.pts.forEach((q, i) => {
-      const h = ys ? ys[i] : q[1];
-      if (h === null) return;
-      const d = (q[0] - p.x) * (q[0] - p.x) + (q[2] - p.z) * (q[2] - p.z);
-      if (d < bd) { bd = d; y = h; }
-    });
-  });
-  return { x: p.x, y, z: p.z };
+  return { x: p.x, y: heightNear(f, hostGround, p.x, p.z), z: p.z };
 }
 
 const padOccupied = (pad: number): boolean => {
@@ -2312,6 +2302,9 @@ requestAnimationFrame(frame);
       hoverPad: worldHoverPad, ringPad: worldRingPad, popups: worldPopups.length, shots: worldShots.length,
       padScreen: (pad: number) => screen(worldPads[pad] ?? null),
       routeScreen: (branch: number, arc: number) => { const r = f.routes[branch]; return screen(r ? routeWorld(r, arc, groundOf(f, hostGround, branch)) : null); },
+      /** 路线上弧长 arc 处，游戏认为的世界坐标（跳字就按它投影）；profiled：这条路线是否在用宿主给的沿路高度剖面 */
+      routeWorld: (branch: number, arc: number) => { const r = f.routes[branch]; return r ? routeWorld(r, arc, groundOf(f, hostGround, branch)) : null; },
+      profiled: f.routes.map((_, i) => !!groundOf(f, hostGround, i)?.profile),
       ground: hostGround && hostGround.field === f.id ? hostGround : null,
       enemyScreen: (iid: number) => { const e = state.enemies.find((en) => en.iid === iid); return screen(e ? routeWorldAt(e.branch, e.progress) : null); },
       enemyWorld: (iid: number) => { const e = state.enemies.find((en) => en.iid === iid); return e ? routeWorldAt(e.branch, e.progress) : null; },

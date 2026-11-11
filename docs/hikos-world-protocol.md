@@ -54,10 +54,16 @@ world = {
 ### `hikos:ground`（对 `td:field` 的回执，可选）
 
 ```
-{ type: 'hikos:ground', v: 1, field: <td:field 的 id>, pads: [y, …], routes: [[y, …], …] }
+{ type: 'hikos:ground', v: 1, field: <td:field 的 id>, pads: [y, …], routes: [[y, …], …],
+  step: 0.5, profile: [[y, …], …] }     // step / profile 可选，游戏 0.9.2 起认
 ```
 
 - `pads[i]`：第 i 个塔位处的地面高度；`routes[k][j]`：第 k 条路线第 j 个折点处的路面高度。数组长度必须与 `td:field` 对得上，`field` 必须等于当前战场 id，否则游戏忽略。
+- `step`、`profile`（可选，成对出现）：**沿路高度剖面**。`profile[k]` 是第 k 条路线从起点起每隔 `step` 个世界单位一个的路面高度，最后一个样点在终点：
+  共 `max(2, ceil(len / step) + 1)` 个，`len` 是 `td:field` 里这条路线的折点逐段累加（`Math.hypot`）出来的长度。
+  弧长 `s` 处的高度 = 相邻两个样点之间线性插值：`i = min(n − 2, floor(s / step))`，`t = (s − i·step) / (i 是最后一段 ? len − i·step : step)`，`y = profile[k][i] + (profile[k][i+1] − profile[k][i])·t`。
+  宿主应当发它**摆敌人用的那一组样点**：这样跳字、命中特效和敌人站在同一个高度上。只有折点高度时，两个折点之间的台阶 / 桥面 / 路缘会被一条直线抹平（都会滨水最多差 0.5，哥特教堂最多差 0.88）。
+  `step` 须在 0.05–100 之间，`profile` 的条数须等于路线条数、每条 2–16384 个有限数；不成形，或某一条的样点数盖不住那条路线，游戏就不用（那条路线的）剖面，退回折点插值，其余字段照用。不认识这两个字段的旧版游戏直接忽略它们。
 - 游戏只拿它做拾取与跳字投影。没收到之前用 `world.roads` 里的参考高度（引道段取最近的有高度的折点）。地形起伏大的皮肤建议发。
 
 ## 游戏 → 宿主

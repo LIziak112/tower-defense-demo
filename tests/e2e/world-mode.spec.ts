@@ -253,6 +253,62 @@ test('敌人贴着真实道路走：三档镜头下，td:frame 里的「路线 +
   }
 });
 
+test('宿主回了沿路高度剖面（hikos:ground 的 step / profile）：跳字的高度跟着剖面走，与宿主摆敌人的高度一致；不带剖面 / 剖面对不上时照旧按折点插值', async ({ page }) => {
+  const game = await openHost(page, 'metropolis-riverside-3d');
+  const field = (await fieldMsg(page))!;
+  const STEP = 0.5, FLAT = 0.2;
+  // 宿主那边的路线长度：按 td:field 里的折点逐段累加（arcade-field.js 的 buildRoute 就是这么算的）
+  const lens: number[] = field.routes.map((r: any) => r.pts.slice(1).reduce((acc: number, p: number[], i: number) => acc + Math.hypot(p[0] - r.pts[i][0], p[2] - r.pts[i][2]), 0));
+  // 一份有台阶的剖面：每 3.5 个单位抬高 / 落下 0.5，折点高度却全是平的——只看折点就完全看不见这些台阶
+  const profile = lens.map((len) => Array.from({ length: Math.max(2, Math.ceil(len / STEP) + 1) }, (_, k) => Math.round((FLAT + (Math.floor(k / 7) % 2) * 0.5 + 0.01 * (k % 3)) * 1000) / 1000));
+  // 宿主摆敌人的高度（arcade-field.js 的 along()）
+  const hostY = (ri: number, s: number) => {
+    const P = profile[ri], len = lens[ri], n = P.length, c = Math.max(0, Math.min(len, s)), i = Math.min(n - 2, Math.floor(c / STEP)), span = (i === n - 2 ? len - i * STEP : STEP) || STEP;
+    return P[i] + (P[i + 1] - P[i]) * Math.max(0, Math.min(1, (c - i * STEP) / span));
+  };
+  const arcs = (len: number) => [...Array.from({ length: Math.floor(len / 0.3) + 1 }, (_, k) => k * 0.3), len];
+  const gameYs = (ri: number) => game.evaluate(({ i, list }) => list.map((s) => (window as any).__td.world.routeWorld(i, s).y as number), { i: ri, list: arcs(lens[ri]) });
+  const profiled = () => game.evaluate(() => (window as any).__td.world.profiled as boolean[]);
+  const base = { type: 'hikos:ground', v: 1, field: field.id, pads: field.pads.map(() => FLAT), routes: field.routes.map((r: any) => r.pts.map(() => FLAT)) };
+
+  // ① 旧宿主的回执（只有折点高度）：整条路线都是平的
+  await page.evaluate((m) => (window as any).__send(m), base);
+  await expect.poll(() => game.evaluate(() => !!(window as any).__td.world.ground)).toBe(true);
+  expect(await profiled()).toEqual(field.routes.map(() => false));
+  for (let ri = 0; ri < field.routes.length; ri++) for (const y of await gameYs(ri)) expect(y).toBeCloseTo(FLAT, 9);
+
+  // ② 带剖面的回执：路线上每一处都是宿主的那个高度
+  await page.evaluate((m) => (window as any).__send(m), { ...base, step: STEP, profile });
+  await expect.poll(async () => (await profiled()).every(Boolean)).toBe(true);
+  for (let ri = 0; ri < field.routes.length; ri++) {
+    const ys = await gameYs(ri), list = arcs(lens[ri]);
+    let worst = 0, lift = 0;
+    ys.forEach((y, k) => { worst = Math.max(worst, Math.abs(y - hostY(ri, list[k]))); lift = Math.max(lift, y - FLAT); });
+    expect(worst, `路线 ${ri} 与宿主的高度差`).toBeLessThan(1e-9);
+    expect(lift, `路线 ${ri} 确实用上了剖面`).toBeGreaterThan(0.45);
+  }
+
+  // ③ 在场的敌人：游戏画跳字用的世界坐标，高度就是宿主把它摆在的高度；投到屏幕上是同一个像素
+  await game.evaluate(() => { (window as any).__td.triggerDemoCombatVfx(); (window as any).__td.setPaused(true); });
+  await expect.poll(async () => (await lastFrame(page))?.enemies.length ?? 0).toBeGreaterThanOrEqual(6);
+  const fr = (await lastFrame(page))!;
+  let raised = 0;
+  for (const row of fr.enemies as number[][]) {
+    const fromGame = await game.evaluate((iid) => ({ s: (window as any).__td.world.enemyScreen(iid), w: (window as any).__td.world.enemyWorld(iid) }), row[0]);
+    const want = hostY(row[2], row[3]);
+    expect(Math.abs(fromGame.w.y - want), `enemy ${row[0]} 高度`).toBeLessThan(0.02);   // 帧里的弧长取了两位小数，台阶斜面上差不出 0.02
+    const onHost = await hostProject(page, fromGame.w.x, want, fromGame.w.z);
+    expect(Math.hypot(fromGame.s.x - onHost.x, fromGame.s.y - onHost.y), `enemy ${row[0]} 屏幕位置`).toBeLessThan(0.5);
+    if (want - FLAT > 0.3) raised++;
+  }
+  expect(raised, '至少有一个敌人站在台阶上（否则这条用例什么也没测到）').toBeGreaterThan(0);
+
+  // ④ 剖面盖不住路线（少了几个样点）：不用它，退回折点插值；游戏照常运行
+  await page.evaluate((m) => (window as any).__send(m), { ...base, step: STEP, profile: profile.map((p) => p.slice(0, -3)) });
+  await expect.poll(async () => (await profiled()).some(Boolean)).toBe(false);
+  for (let ri = 0; ri < field.routes.length; ri++) for (const y of await gameYs(ri)) expect(y).toBeCloseTo(FLAT, 9);
+});
+
 test('手势交还给地图相机：拖动 = 旋转、Shift 拖动 = 平移、滚轮 / 双指 = 缩放、双击空白 = 复位；拖动不建塔', async ({ page }) => {
   const game = await openHost(page);
   const cams = async () => (await msgs(page)).filter((m) => m.type === 'td:camera' && m.kind !== 'frame');

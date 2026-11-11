@@ -65,8 +65,18 @@ export interface WorldPoint { x: number; y: number; z: number }
 /**
  * 宿主回的真实高度（hikos:ground）：它收到 td:field 后，按自己场景的地形量出每个塔位的地面高度、每条路线每个折点的路面高度。
  * 游戏只拿它做两件要像素对得上的事（点哪个塔位、跳字画在哪）；没收到之前用宿主导出道路时带的参考高度。
+ *
+ * step / profile（可选，游戏 0.9.2 起认）：每条路线沿路的高度剖面——从起点起每隔 step 个世界单位一个样点，最后一个样点在终点。
+ * 宿主摆敌人用的就是这一组样点（样点之间线性插值），所以照着它取高度，跳字和敌人就站在同一个高度上。
+ * 只有折点高度时，两个折点之间的台阶 / 桥面 / 路缘被一条直线抹平：都会滨水最多差 0.5，哥特教堂最多差 0.88。
  */
-export interface HostGround { field: string; pads: number[]; routes: number[][] }
+export interface HostGround { field: string; pads: number[]; routes: number[][]; step?: number; profile?: number[][] }
+
+/** 一条路线上可用的真实高度。ys：每个折点一个；step / profile：沿路剖面，宿主给了、而且正好盖住这条路线才有 */
+export interface RouteGround { ys: number[]; step?: number; profile?: number[] }
+
+/** 剖面每条路线最多这么多个样点（step = 0.5 时是 8 公里长的路线，远超任何一块战场） */
+const PROFILE_MAX = 16384;
 
 /** 校验一条 hikos:ground（不可信输入）：只留有限数字；数组长度是否对得上由使用处核对 */
 export function parseGround(raw: unknown): HostGround | null {
@@ -83,19 +93,67 @@ export function parseGround(raw: unknown): HostGround | null {
   if (!pads || !Array.isArray(g.routes) || g.routes.length > 8) return null;
   const routes: number[][] = [];
   for (const r of g.routes) { const ys = nums(r, 1024); if (!ys) return null; routes.push(ys); }
-  return { field: g.field, pads, routes };
+  const out: HostGround = { field: g.field, pads, routes };
+  // 沿路剖面是可选的加项：不成形就当没给（照旧在折点之间插值），不连累前面那几样
+  if (typeof g.step === 'number' && Number.isFinite(g.step) && g.step >= 0.05 && g.step <= 100 && Array.isArray(g.profile) && g.profile.length === routes.length) {
+    const profile: number[][] = [];
+    for (const r of g.profile) { const ys = nums(r, PROFILE_MAX); if (!ys || ys.length < 2) return out; profile.push(ys); }
+    out.step = g.step;
+    out.profile = profile;
+  }
+  return out;
 }
 
-/** 这条路线可用的真实高度（每个折点一个）；宿主还没回 / 对不上这块战场时为 null */
-export function groundOf(field: WorldField, ground: HostGround | null | undefined, ri: number): number[] | null {
+/** 折线的长度，累加的写法与宿主 arcade-field.js 的 buildRoute 相同（同一组折点、同一个顺序），两边算出来是同一个数 */
+const lengthCache = new WeakMap<object, number>();
+function polylineLength(route: FieldRoute): number {
+  let len = lengthCache.get(route.pts);
+  if (len === undefined) {
+    len = 0;
+    for (let i = 1; i < route.pts.length; i++) len += Math.hypot(route.pts[i][0] - route.pts[i - 1][0], route.pts[i][2] - route.pts[i - 1][2]);
+    lengthCache.set(route.pts, len);
+  }
+  return len;
+}
+
+/** 这份剖面是不是正好盖住这条路线：倒数第二个样点还在路线上，最后一个样点落在终点（宿主取样的写法：count = max(2, ceil(len / step) + 1)） */
+function profileFits(route: FieldRoute, step: number, profile: number[]): boolean {
+  const len = polylineLength(route), n = profile.length;
+  return n >= 2 && (n - 2) * step < len + 1e-6 && (n - 1) * step > len - 1e-6;
+}
+
+const groundCache = new WeakMap<HostGround, (RouteGround | null)[]>();
+
+/** 这条路线可用的真实高度；宿主还没回 / 对不上这块战场时为 null。同一条回执只核对一次（敌人、跳字每帧都来问） */
+export function groundOf(field: WorldField, ground: HostGround | null | undefined, ri: number): RouteGround | null {
   if (!ground || ground.field !== field.id) return null;
-  const ys = ground.routes[ri], route = field.routes[ri];
-  return ys && route && ys.length === route.pts.length ? ys : null;
+  let per = groundCache.get(ground);
+  if (!per) {
+    per = field.routes.map((route, i): RouteGround | null => {
+      const ys = ground.routes[i];
+      if (!ys || ys.length !== route.pts.length) return null;
+      const profile = ground.step && ground.profile ? ground.profile[i] : undefined;
+      return profile && profileFits(route, ground.step!, profile) ? { ys, step: ground.step, profile } : { ys };
+    });
+    groundCache.set(ground, per);
+  }
+  return per[ri] ?? null;
 }
 
-/** 路线上弧长 s 处的路面高度。有宿主回的真实高度（ys）就在折点之间线性插值；否则用参考高度，引道段没有参考值时取路线上最近的有高度的点 */
-export function routeHeight(route: FieldRoute, s: number, ys?: number[] | null): number {
-  const q = routePoint(route, s);
+/**
+ * 路线上弧长 s 处的路面高度，按手上有什么依次取：
+ * 1. 宿主给了沿路剖面：在相邻两个样点之间线性插值——与宿主摆敌人的 along() 是同一个算式，所以跳字与敌人同高；
+ * 2. 只有每个折点的真实高度（ys，也可以直接传数组）：在折点之间线性插值；
+ * 3. 都没有：用宿主导出道路时带的参考高度，引道段没有参考值时取路线上最近的有高度的点。
+ */
+export function routeHeight(route: FieldRoute, s: number, ground?: RouteGround | number[] | null): number {
+  const g: RouteGround | null = Array.isArray(ground) ? { ys: ground } : ground ?? null;
+  if (g && g.profile && g.step) {
+    const P = g.profile, n = P.length, step = g.step, len = polylineLength(route), c = Math.max(0, Math.min(len, s));
+    const i = Math.min(n - 2, Math.floor(c / step)), span = (i === n - 2 ? len - i * step : step) || step;
+    return P[i] + (P[i + 1] - P[i]) * Math.max(0, Math.min(1, (c - i * step) / span));
+  }
+  const q = routePoint(route, s), ys = g ? g.ys : null;
   if (ys && ys.length === route.pts.length) {
     const a = route.pts[q.seg], b = route.pts[q.seg + 1];
     if (!b) return ys[q.seg] ?? 0;
@@ -113,10 +171,39 @@ export function routeHeight(route: FieldRoute, s: number, ys?: number[] | null):
   return best;
 }
 
-/** 路线上弧长 s 处的世界坐标（含高度） */
-export function routeWorld(route: FieldRoute, s: number, ys?: number[] | null): WorldPoint {
+/** 路线上弧长 s 处的世界坐标（含高度；ground 见 routeHeight） */
+export function routeWorld(route: FieldRoute, s: number, ground?: RouteGround | number[] | null): WorldPoint {
   const q = routePoint(route, s);
-  return { x: q.x, y: routeHeight(route, s, ys), z: q.z };
+  return { x: q.x, y: routeHeight(route, s, ground), z: q.z };
+}
+
+/**
+ * 路线附近一点 (x, z) 的路面高度（命中点、被推倒的建筑、塔位旁边的字都落在路面附近）。
+ * 宿主给了沿路剖面：取离它最近的那个路线点上的高度。只有折点高度 / 参考高度：取最近的那个折点的高度（0.9.1 及以前一直如此）。
+ */
+export function heightNear(field: WorldField, ground: HostGround | null | undefined, x: number, z: number): number {
+  let y = 0, bd = Infinity;
+  field.routes.forEach((route, ri) => {
+    const g = groundOf(field, ground, ri), P = route.pts;
+    if (g && g.profile) {
+      let cum = 0;
+      for (let i = 1; i < P.length; i++) {
+        const a = P[i - 1], b = P[i], dx = b[0] - a[0], dz = b[2] - a[2], l2 = dx * dx + dz * dz, l = Math.sqrt(l2);
+        const t = l2 > 1e-12 ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[2]) * dz) / l2)) : 0;
+        const ex = x - a[0] - dx * t, ez = z - a[2] - dz * t, d = ex * ex + ez * ez;
+        if (d < bd) { bd = d; y = routeHeight(route, cum + t * l, g); }
+        cum += l;
+      }
+      return;
+    }
+    P.forEach((q, i) => {
+      const h = g ? g.ys[i] : q[1];
+      if (h === null) return;
+      const d = (q[0] - x) * (q[0] - x) + (q[2] - z) * (q[2] - z);
+      if (d < bd) { bd = d; y = h; }
+    });
+  });
+  return y;
 }
 
 /** 每个塔位的世界坐标。高度：宿主回了就用真实地面高度；否则取它旁边那段路面的参考高度（塔位就在路缘外一两个单位） */
