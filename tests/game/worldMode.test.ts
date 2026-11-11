@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildWorldField, milliToWorld, packForField, parseWorldMap, type HostWorldMap, type WorldField } from '../../src/game/worldField';
 import {
-  arcOf, encodeField, encodeFrame, groundOf, padPoints, parseCamera, parseGround, pickPad, projectWorld, routeHeight, routeIndex, routeMilli, routeWorld,
+  arcOf, encodeField, encodeFrame, groundOf, heightNear, padPoints, parseCamera, parseGround, pickPad, projectWorld, routeHeight, routeIndex, routeMilli, routeWorld,
   type FrameUi, type HostCamera,
 } from '../../src/game/worldMode';
 import { generateCampaignPack, localizePackForSkin } from '../../src/game/culturalThemes';
@@ -122,6 +122,138 @@ describe.each(REAL)('真实地图 %s：点选塔位', (skin) => {
     expect(groundOf(field, { ...lifted, routes: [[1]] }, 0)).toBeNull();
     expect(parseGround({ field: field.id, pads: [1, 'x'], routes: [] })).toBeNull();
     expect(parseGround({ field: '', pads: [], routes: [] })).toBeNull();
+  });
+});
+
+// —— 沿路高度剖面（hikos:ground 的 step / profile，游戏 0.9.2 起）。
+// 宿主摆敌人用的是沿路每 0.5 个世界单位取一次的真实地面高度（相邻三个样点取最高，样点之间线性插值）；游戏以前只有折点高度，
+// 折点之间的台阶 / 桥面被一条直线抹平，跳字就比敌人高出或低下去一截（都会滨水 0.5、哥特教堂 0.88）。
+// 下面两个函数是宿主 web/hikos/src/addons/arcade-field.js 里 buildRoute() / along() 取高度那几行的原样移植：游戏照着剖面算出来的高度必须与它一致。
+const HOST_STEP = 0.5;
+type HostRoute = { len: number; count: number; sy: number[]; vy: number[] };
+function hostRoute(r: { pts: [number, number | null, number][]; fl: number[] }, groundAt: (x: number, z: number) => number): HostRoute {
+  const P = r.pts, n = P.length, cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][2] - P[i - 1][2]));
+  const len = cum[n - 1], virt = (i: number) => (r.fl[i] & 2) !== 0;
+  const vy = P.map((p) => groundAt(p[0], p[2]));
+  for (let i = 0; i < n - 1;) {
+    if (!virt(i)) { i++; continue; }
+    let j = i; while (j < n - 1 && virt(j)) j++;
+    const l = cum[j] - cum[i] || 1; for (let k = i + 1; k < j; k++) vy[k] = vy[i] + (vy[j] - vy[i]) * (cum[k] - cum[i]) / l;
+    i = j;
+  }
+  const count = Math.max(2, Math.ceil(len / HOST_STEP) + 1), sy = new Array<number>(count), sf = new Array<number>(count);
+  let seg = 0;
+  for (let k = 0; k < count; k++) {
+    const s = Math.min(len, k * HOST_STEP); while (seg < n - 2 && cum[seg + 1] < s) seg++;
+    const l = cum[seg + 1] - cum[seg], t = l > 1e-9 ? Math.max(0, Math.min(1, (s - cum[seg]) / l)) : 0, a = P[seg], b = P[seg + 1];
+    sf[k] = r.fl[seg]; sy[k] = virt(seg) ? vy[seg] + (vy[seg + 1] - vy[seg]) * t : groundAt(a[0] + (b[0] - a[0]) * t, a[2] + (b[2] - a[2]) * t);
+  }
+  const raw = sy.slice(); for (let k = 0; k < count; k++) if (!(sf[k] & 2)) sy[k] = Math.max(raw[Math.max(0, k - 1)], raw[k], raw[Math.min(count - 1, k + 1)]);
+  return { len, count, sy, vy };
+}
+function hostHeight(R: HostRoute, s: number): number {
+  const c = Math.max(0, Math.min(R.len, s)), i = Math.min(R.count - 2, Math.floor(c / HOST_STEP)), span = (i === R.count - 2 ? R.len - i * HOST_STEP : HOST_STEP) || HOST_STEP;
+  return R.sy[i] + (R.sy[i + 1] - R.sy[i]) * Math.max(0, Math.min(1, (c - i * HOST_STEP) / span));
+}
+const round3 = (v: number) => Math.round(v * 1000) / 1000;
+/** 一块有台阶的地：每隔几个单位抬高 / 落下 0.5（路缘、桥头那样的台阶），外加一点起伏 */
+const terraced = (x: number, z: number): number => (Math.abs(Math.floor((x + 3 * z) / 9)) % 2 === 0 ? 0.1 : 0.6) + 0.02 * Math.sin(x * 0.7);
+
+describe.each(REAL)('真实地图 %s：沿路高度剖面', (skin) => {
+  const { field } = fieldFor(skin);
+  const host = field.routes.map((r) => hostRoute(r, terraced));
+  /** 宿主回执的样子：数都取三位小数 */
+  const reply = (over: Record<string, unknown> = {}) => ({
+    type: 'hikos:ground', v: 1, field: field.id, pads: field.pads.map((p) => round3(terraced(p.x, p.z))), routes: host.map((R) => R.vy.map(round3)),
+    step: HOST_STEP, profile: host.map((R) => R.sy.map(round3)), ...over,
+  });
+  /** 宿主按取了三位小数的样点摆敌人时的高度 */
+  const sent = host.map((R) => ({ ...R, sy: R.sy.map(round3) }));
+
+  it('有剖面：路线上每一处的高度就是宿主摆敌人的高度（同一个算式，差不到 1e-9）', () => {
+    const ground = parseGround(reply())!;
+    expect(ground.step).toBe(HOST_STEP);
+    field.routes.forEach((route, ri) => {
+      const g = groundOf(field, ground, ri)!;
+      expect(g.profile, `路线 ${ri} 用上了剖面`).toBeDefined();
+      let worst = 0;
+      for (let s = 0; s <= route.len + 0.2; s += 0.05) worst = Math.max(worst, Math.abs(routeHeight(route, s, g) - hostHeight(sent[ri], s)));
+      expect(worst, `路线 ${ri}`).toBeLessThan(1e-9);
+      // 与没取整的真实高度相比，只差取三位小数的那一点
+      let vsReal = 0;
+      for (let s = 0; s <= route.len; s += 0.05) vsReal = Math.max(vsReal, Math.abs(routeWorld(route, s, g).y - hostHeight(host[ri], s)));
+      expect(vsReal, `路线 ${ri}`).toBeLessThanOrEqual(0.0005 + 1e-9);
+    });
+  });
+
+  it('没有剖面（旧宿主）：照旧在折点之间插值——在有台阶的地上会和宿主差出几乎一整级台阶，这就是剖面要补的那一截', () => {
+    const ground = parseGround(reply({ step: undefined, profile: undefined }))!;
+    expect(ground.step).toBeUndefined();
+    expect(ground.profile).toBeUndefined();
+    let worst = 0;
+    field.routes.forEach((route, ri) => {
+      const g = groundOf(field, ground, ri)!;
+      expect(g.profile).toBeUndefined();
+      for (let s = 0; s <= route.len; s += 0.05) worst = Math.max(worst, Math.abs(routeHeight(route, s, g) - hostHeight(sent[ri], s)));
+      // 只传折点高度数组的旧写法仍然可用，结果相同
+      expect(routeHeight(route, route.len / 3, ground.routes[ri])).toBe(routeHeight(route, route.len / 3, g));
+    });
+    expect(worst).toBeGreaterThan(0.3);
+  });
+
+  it('剖面不成形就当没给：其余几样照用，高度退回折点插值', () => {
+    const good = parseGround(reply())!;
+    const bad: Record<string, unknown>[] = [
+      { step: 0 }, { step: -0.5 }, { step: 1e9 }, { step: '0.5' }, { step: Number.NaN },
+      { profile: host.map((R) => R.sy.map(round3)).slice(1) },                                  // 条数和路线对不上
+      { profile: [...host.map((R) => R.sy.map(round3)), [0, 1]] },
+      { profile: host.map((R, i) => (i === 0 ? [...R.sy.slice(0, 5), 'x'] : R.sy)) },           // 混进了不是数的东西
+      { profile: host.map((R, i) => (i === 0 ? [...R.sy.slice(0, 5), Number.POSITIVE_INFINITY] : R.sy)) },
+      { profile: host.map(() => [1]) },                                                         // 一个样点插不了值
+      { profile: host.map(() => new Array(16385).fill(0)) },                                    // 超长
+      { profile: 'nope' },
+    ];
+    for (const over of bad) {
+      const g = parseGround(reply(over));
+      expect(g, JSON.stringify(over).slice(0, 60)).not.toBeNull();
+      expect(g!.profile, JSON.stringify(over).slice(0, 60)).toBeUndefined();
+      expect(g!.step).toBeUndefined();
+      expect(g!.pads).toEqual(good.pads);
+      expect(g!.routes).toEqual(good.routes);
+    }
+  });
+
+  it('剖面盖不住这条路线（样点太少 / 太多 / 间距不对）：这条路线不用它，别的照用', () => {
+    const cut = parseGround(reply({ profile: host.map((R, i) => (i === 0 ? R.sy.slice(0, R.sy.length - 3) : R.sy).map(round3)) }))!;
+    expect(groundOf(field, cut, 0)!.profile).toBeUndefined();
+    expect(groundOf(field, cut, 0)!.ys).toEqual(cut.routes[0]);
+    for (let ri = 1; ri < field.routes.length; ri++) expect(groundOf(field, cut, ri)!.profile).toBeDefined();
+    const long = parseGround(reply({ profile: host.map((R) => [...R.sy, 0, 0, 0].map(round3)) }))!;
+    const wide = parseGround(reply({ step: 1 }))!;
+    field.routes.forEach((_, ri) => {
+      expect(groundOf(field, long, ri)!.profile).toBeUndefined();
+      expect(groundOf(field, wide, ri)!.profile).toBeUndefined();
+    });
+    // 别的战场的回执：整条不用
+    expect(groundOf(field, parseGround(reply({ field: 'other' })), 0)).toBeNull();
+  });
+
+  it('路线旁边一点的高度（命中点、被推倒的建筑）：有剖面取最近那个路线点上的高度，没有剖面取最近折点的高度', () => {
+    const withProfile = parseGround(reply())!, bare = parseGround(reply({ step: undefined, profile: undefined }))!;
+    field.routes.forEach((route, ri) => {
+      for (const frac of [0.21, 0.5, 0.83]) {
+        const s = route.len * frac, q = routeWorld(route, s, groundOf(field, withProfile, ri));
+        // 正好在路线上的一点：就是这一点的高度（另一条路线也经过这里时两边是同一块地，高度相同）
+        expect(heightNear(field, withProfile, q.x, q.z), `路线 ${ri} s=${s.toFixed(1)}`).toBeCloseTo(q.y, 2);
+        // 没有剖面：最近的那个折点
+        let best = 0, bd = Infinity;
+        field.routes.forEach((r2, j) => r2.pts.forEach((p, i) => { const d = (p[0] - q.x) ** 2 + (p[2] - q.z) ** 2; if (d < bd) { bd = d; best = bare.routes[j][i]; } }));
+        expect(heightNear(field, bare, q.x, q.z)).toBe(best);
+      }
+    });
+    // 宿主什么都没回：用道路的参考高度，不抛错
+    expect(Number.isFinite(heightNear(field, null, field.pads[0].x, field.pads[0].z))).toBe(true);
   });
 });
 

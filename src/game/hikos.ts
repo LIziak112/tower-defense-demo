@@ -4,7 +4,8 @@
 // 游戏 → 宿主：td:ready {v} · td:state {state} · td:exit · td:resize {w,h} · td:settle:request {…} · td:battle {…}。
 // 世界模式（大厅 #27514，docs/hikos-world-protocol.md）：hikos:context / hikos:map 的 map.world 带场景真实几何（世界坐标），
 //   宿主每帧推 hikos:camera {seq, w, h, m[16], ppu, azimuth, pitch, zoom}；游戏回 td:field（战场）/ td:frame（每 tick 状态）/ td:camera（把画布上的手势交还给地图相机）；
-//   宿主收到 td:field 后回 hikos:ground {field, pads[], routes[][]}（按场景地形量出的真实高度，游戏拿去做拾取与跳字投影）。
+//   宿主收到 td:field 后回 hikos:ground {field, pads[], routes[][], step?, profile?[][]}（按场景地形量出的真实高度，游戏拿去做拾取与跳字投影；
+//   step / profile 是沿路高度剖面，宿主摆敌人用的那一组样点，0.9.2 起认）。
 // 军师（任务 fb4d93bc，06 规格 §3）：游戏 → 宿主 td:advisor:request {reqId, kind, deadlineMs, stateVersion, snapshot, llm}；
 //   宿主 → 游戏 hikos:advisor:reply {reqId, ok, payload | error, provider, latencyMs}；hikos:context 可多带 advisor {enabled, provider}（只增不改）。
 //   宿主拿自己的凭据与路由去调模型；游戏只送极简决策快照与提示词，不碰端点与密钥。
