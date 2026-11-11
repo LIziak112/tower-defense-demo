@@ -6,7 +6,7 @@ import { generateCampaignPack, localizePackForSkin } from '../../src/game/cultur
 import { createBattle, step, pathLength, positionAt, checksum, CELL, milliOf } from '../../src/runtime/index';
 import { dryRun } from '../../src/content/dryrun';
 import { reachTable } from '../../src/advisor/snapshot';
-import { gridCityFixture } from './worldFixtures';
+import { gridCityFixture, laneFixture } from './worldFixtures';
 
 const gridCity = gridCityFixture;
 
@@ -227,12 +227,15 @@ describe.each(REAL)('真实地图 %s', (skin) => {
       for (const rt of f.routes) {
         expect(rt.pts.length).toBe(rt.wd.length);
         expect(rt.pts.length).toBe(rt.fl.length);
-        for (let s = 0; s <= rt.len; s += 1.5) {
-          const q = routePoint(rt, s);
-          if (q.approach) continue;
+        // 每 0.1 取一点，外加每一段路面段的两个端点（引道接上路面的那个折点就是倒角线上离路缘最近的地方）。
+        // 判定线 0.01：路面段——包括引道拐上路面的倒角——不许露到任何一条真实道路的路缘外面。
+        const at: [number, number, string][] = [];
+        for (let s = 0; s <= rt.len; s += 0.1) { const q = routePoint(rt, s); if (!q.approach) at.push([q.x, q.z, `s=${s.toFixed(1)}`]); }
+        for (let i = 1; i < rt.pts.length; i++) if (!(rt.fl[i - 1] & SEG_APPROACH)) for (const k of [i - 1, i]) at.push([rt.pts[k][0], rt.pts[k][2], `折点 ${k}`]);
+        for (const [x, z, where] of at) {
           let best = Infinity;
-          for (const r of world.roads) for (let i = 1; i < r.pts.length; i++) best = Math.min(best, segDist(q.x, q.z, r.pts[i - 1][0], r.pts[i - 1][2], r.pts[i][0], r.pts[i][2]) - r.w / 2);
-          expect(best, `${skin} lv${lv} s=${s} (${q.x.toFixed(1)}, ${q.z.toFixed(1)})`).toBeLessThanOrEqual(0.35);
+          for (const r of world.roads) for (let i = 1; i < r.pts.length; i++) best = Math.min(best, segDist(x, z, r.pts[i - 1][0], r.pts[i - 1][2], r.pts[i][0], r.pts[i][2]) - r.w / 2);
+          expect(best, `${skin} lv${lv} ${where} (${x.toFixed(2)}, ${z.toFixed(2)}) 离路缘`).toBeLessThanOrEqual(0.01);
         }
         // 不走回头路：相隔 3 个单位以上的两个采样点不会重合
         const samples: [number, number][] = [];
@@ -291,5 +294,107 @@ describe.each(REAL)('真实地图 %s', (skin) => {
       expect(real / tpl, `${skin} lv${lv} 行军时间`).toBeGreaterThan(0.85);
       expect(real / tpl).toBeLessThan(1.2);
     }
+  });
+});
+
+// —— 引道与路面相接的拐角（任务 771f9e1c 第一项）：港口栈道宽只有 1，门口引道拐上栈道的倒角以前有一截露在栈道外面（最多 0.30）。
+describe('引道拐上窄路：倒角不出路面', () => {
+  const edge = (world: HostWorldMap, x: number, z: number): number => {
+    let best = Infinity;
+    for (const r of world.roads) for (let i = 1; i < r.pts.length; i++) best = Math.min(best, segDist(x, z, r.pts[i - 1][0], r.pts[i - 1][2], r.pts[i][0], r.pts[i][2]) - r.w / 2);
+    return best;
+  };
+  /** 路面段（含倒角）上离路缘最远的地方：每 0.02 取一点，外加路面段的端点。≤ 0 = 全在路面内 */
+  const worstOnRoad = (world: HostWorldMap, rt: { pts: [number, number | null, number][]; wd: number[]; fl: number[]; len: number }): number => {
+    let worst = -Infinity;
+    for (let s = 0; s <= rt.len; s += 0.02) { const q = routePoint(rt, s); if (!q.approach) worst = Math.max(worst, edge(world, q.x, q.z)); }
+    for (let i = 1; i < rt.pts.length; i++) if (!(rt.fl[i - 1] & SEG_APPROACH)) for (const k of [i - 1, i]) worst = Math.max(worst, edge(world, rt.pts[k][0], rt.pts[k][2]));
+    return worst;
+  };
+  const build = (w: number, spawn: 'side' | 'back' = 'side') => { const world = laneFixture(w, spawn); return { world, f: buildWorldField(world, { pathCells: 22, level: 1 })! }; };
+
+  it('路宽 1（港口栈道）：引道垂直拐上路面，倒角两端都在路面内，引道那一端收到路缘以内 0.05', () => {
+    const { world, f } = build(1);
+    const rt = f.routes[0];
+    expect(f.spawn.key).toBe('side');
+    // 折点 0 门口 → 折点 1 倒角起点（引道线上）→ 折点 2 倒角终点（路的中心线上）
+    expect(rt.fl[0] & SEG_APPROACH).toBe(SEG_APPROACH);
+    expect(rt.fl[1] & SEG_APPROACH).toBe(0);
+    expect(rt.pts[1][0]).toBeCloseTo(-50, 2);
+    expect(rt.pts[1][2]).toBeCloseTo(0.45, 2);       // 离中心线 0.45 = 半宽 0.5 − 0.05
+    expect(rt.pts[2][0]).toBeCloseTo(-49.2, 2);      // 路面那一边照旧退 0.8
+    expect(rt.pts[2][2]).toBeCloseTo(0, 2);
+    expect(worstOnRoad(world, rt)).toBeLessThanOrEqual(-0.04);
+  });
+
+  it('路宽 1：终点那一头（路面拐进母星的引道）同样不出路面', () => {
+    const { world, f } = build(1);
+    const rt = f.routes[0], n = rt.pts.length;
+    expect(f.base.key).toBe('home');
+    expect(rt.fl[n - 2] & SEG_APPROACH).toBe(SEG_APPROACH);   // 最后一段是引道
+    expect(rt.fl[n - 3] & SEG_APPROACH).toBe(0);              // 它前面是倒角（路面段）
+    expect(rt.pts[n - 3][0]).toBeCloseTo(49.2, 2);
+    expect(rt.pts[n - 3][2]).toBeCloseTo(0, 2);
+    expect(rt.pts[n - 2][0]).toBeCloseTo(50, 2);
+    expect(rt.pts[n - 2][2]).toBeCloseTo(-0.45, 2);
+  });
+
+  it('引道从路的起点背后斜着接上来：退出去的点按到拐点的距离收，仍在路面内', () => {
+    const { world, f } = build(1, 'back');
+    expect(f.spawn.key).toBe('back');
+    const rt = f.routes[0];
+    expect(Math.hypot(rt.pts[1][0] + 60, rt.pts[1][2])).toBeCloseTo(0.45, 1);   // 离路的起点 (-60, 0) 0.45
+    expect(worstOnRoad(world, rt)).toBeLessThanOrEqual(-0.03);
+  });
+
+  it('路够宽（引道那一端本来就在路面内）：倒角原样不动，两边各退 0.8', () => {
+    for (const w of [1.6, 3, 5]) {
+      const { world, f } = build(w);
+      const rt = f.routes[0];
+      expect(rt.pts[1][2], `w=${w}`).toBeCloseTo(0.8, 2);
+      expect(rt.pts[2][0], `w=${w}`).toBeCloseTo(-49.2, 2);
+      expect(worstOnRoad(world, rt), `w=${w}`).toBeLessThanOrEqual(0.01);
+    }
+  });
+
+  it('很窄的路（收窄后退不出 0.25）：不倒角，引道走到中心线上再拐', () => {
+    const { world, f } = build(0.5);
+    const rt = f.routes[0];
+    expect(rt.pts[1][0]).toBeCloseTo(-50, 2);
+    expect(rt.pts[1][2]).toBeCloseTo(0, 2);
+    expect(rt.fl[0] & SEG_APPROACH).toBe(SEG_APPROACH);
+    expect(rt.fl[1] & SEG_APPROACH).toBe(0);
+    expect(worstOnRoad(world, rt)).toBeLessThanOrEqual(0.01);
+  });
+
+  it('收窄拐角不挪塔位：塔位仍按没收窄的折线排，窄路和宽路上落点相同', () => {
+    // 同一张图只把路宽从 1 改成 1.6（1.6 的路上倒角不用收窄）：路线只差拐角里的两个折点；
+    // 直路两旁的塔位离路缘的距离跟着路宽走，沿路的位置应当一样。要是塔位照着收窄后的路线排，沿路位置会整体差 0.14
+    const narrow = build(1).f, wide = build(1.6).f;
+    expect(narrow.pads.length).toBe(wide.pads.length);
+    let straight = 0;
+    narrow.pads.forEach((p, i) => {
+      const q = wide.pads[i];
+      expect(p.side).toBe(q.side);
+      if (Math.abs(p.x) > 45) return;   // 两头拐角旁边的塔位是从斜着的倒角线上偏出去的，路宽不同落点自然不同
+      straight++;
+      expect(p.x, `塔位 ${i} 沿路位置`).toBeCloseTo(q.x, 2);
+      expect(Math.abs(p.z) + 0.3, `塔位 ${i} 离路缘`).toBeCloseTo(Math.abs(q.z), 2);   // 半宽差 0.3
+    });
+    expect(straight).toBeGreaterThanOrEqual(8);
+    // 记在塔位上的路程是路线上的路程：按它取到的点就在塔位旁边
+    for (const p of narrow.pads) {
+      const at = routePoint(narrow.routes[p.branch], p.s);
+      expect(Math.hypot(at.x - p.x, at.z - p.z)).toBeLessThanOrEqual(at.w / 2 + narrow.padR + 0.3 + 2.7 + 0.05);
+    }
+  });
+
+  it('港口真实地图：四块战场的塔位数与收窄拐角之前相同（15 / 13 / 12 / 13）', () => {
+    const world = loadReal('harbor-district-3d');
+    const counts = [1, 2, 3, 4].map((lv) => {
+      const p = localizePackForSkin(generateCampaignPack(lv, 'harbor-district-3d', 'zh'), 'harbor-district-3d', 'zh');
+      return buildWorldField(world, { pathCells: pathLength(p.map.path) / CELL, level: lv })!.pads.length;
+    });
+    expect(counts).toEqual([15, 13, 12, 13]);
   });
 });

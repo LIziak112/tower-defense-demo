@@ -327,8 +327,21 @@ function nodesOf(g: RoadGraph, from: number, edges: number[]): number[] {
 
 interface Poly { pts: WorldPt[]; wd: number[]; fl: number[] }
 
-/** 折线清理：去重合点、并共线点、给拐角倒角（单位在三维里不是瞬间直角掉头） */
-function tidy(inp: Poly): Poly {
+/** 引道接上路面的倒角：靠引道那一端收进路缘以内这么多（世界单位；坐标取两位小数后仍在路面内） */
+const JOIN_INSET = 0.05;
+
+/**
+ * 折线清理：去重合点、并共线点、给拐角倒角（单位在三维里不是瞬间直角掉头）。
+ *
+ * 倒角 = 从拐点沿两边各退一段再连起来，倒角线算路面段。两边都是路面时，退的两段都在路的中心线上，倒角线在路面内。
+ * 引道与路面相接的拐角不一样：引道那一边退出去的点在引道线上，路窄的时候（港口栈道宽 1）它还没进路面，
+ * 倒角线就有一截露在路缘外面。所以这种拐角引道那一边只退到路缘以内 JOIN_INSET 处；倒角线两端都在这条路的路面里，
+ * 路面是凸的，整条倒角线也就在路面里。引道那一端本来就在路面内的（路够宽），原样不动。
+ *
+ * joinInside = false 时不做这一步收窄（两边照旧退一样远），只用来排塔位，见 buildWorldField 里的 layouts。
+ * 返回值的 inset：这条折线上有没有拐角被收窄过。
+ */
+function tidy(inp: Poly, joinInside = true): Poly & { inset: boolean } {
   const P: WorldPt[] = [], W: number[] = [], F: number[] = [];
   for (let i = 0; i < inp.pts.length; i++) {
     const p = inp.pts[i];
@@ -345,16 +358,30 @@ function tidy(inp: Poly): Poly {
     }
   }
   // 倒角
-  const out: Poly = { pts: [P[0]], wd: [W[0]], fl: [F[0]] };
+  const out: Poly & { inset: boolean } = { pts: [P[0]], wd: [W[0]], fl: [F[0]], inset: false };
   for (let i = 1; i < P.length - 1; i++) {
     const a = P[i - 1], b = P[i], c = P[i + 1];
     const ux = b[0] - a[0], uz = b[2] - a[2], vx = c[0] - b[0], vz = c[2] - b[2];
     const lu = Math.sqrt(ux * ux + uz * uz), lv = Math.sqrt(vx * vx + vz * vz);
     const cos = (ux * vx + uz * vz) / (lu * lv);
     const d = Math.min(Math.max(0.8, Math.min(2.2, 0.35 * Math.min(W[i - 1], W[i]))), 0.4 * lu, 0.4 * lv);
-    if (cos < 0.9 && d > 0.25) {
-      out.pts.push([b[0] - (ux / lu) * d, b[1], b[2] - (uz / lu) * d]); out.wd.push(Math.min(W[i - 1], W[i])); out.fl.push(F[i - 1] & F[i]);
-      out.pts.push([b[0] + (vx / lv) * d, b[1], b[2] + (vz / lv) * d]); out.wd.push(W[i]); out.fl.push(F[i]);
+    // du / dv：进来那一边、出去那一边各退多远。一般两边相同；引道与路面相接时，引道那一边不退出路面
+    let du = d, dv = d;
+    const apU = (F[i - 1] & SEG_APPROACH) !== 0, apV = (F[i] & SEG_APPROACH) !== 0;
+    if (joinInside && apU !== apV && cos < 0.9 && d > 0.25) {
+      const half = (apU ? W[i] : W[i - 1]) / 2;   // 接上的那条路的半宽
+      // 引道线上退出去的点离这段路的中心线多远：引道从这段路的侧面 / 前方来，量到中心线的垂距；从这段路的起点背后来，量到拐点
+      const slope = cos <= 0 ? Math.abs(ux * vz - uz * vx) / (lu * lv) : 1;
+      if (d * slope > half + 1e-9) {
+        const inside = Math.max(0, half - JOIN_INSET) / slope;
+        if (apU) du = inside; else dv = inside;
+        out.inset = true;
+      }
+    }
+    // 收窄后退不出 0.25 的（路窄于 0.6）就不倒角：引道走到中心线上再拐
+    if (cos < 0.9 && Math.min(du, dv) > 0.25) {
+      out.pts.push([b[0] - (ux / lu) * du, b[1], b[2] - (uz / lu) * du]); out.wd.push(Math.min(W[i - 1], W[i])); out.fl.push(F[i - 1] & F[i]);
+      out.pts.push([b[0] + (vx / lv) * dv, b[1], b[2] + (vz / lv) * dv]); out.wd.push(W[i]); out.fl.push(F[i]);
     } else { out.pts.push(b); out.wd.push(W[i]); out.fl.push(F[i]); }
   }
   if (P.length > 1) { out.pts.push(P[P.length - 1]); out.wd.push(W[W.length - 2]); out.fl.push(F[F.length - 2]); }
@@ -365,6 +392,19 @@ function polyLen(pts: WorldPt[]): number {
   let l = 0;
   for (let i = 1; i < pts.length; i++) l += Math.sqrt(dist2(pts[i - 1][0], pts[i - 1][2], pts[i][0], pts[i][2]));
   return l;
+}
+
+/** 折线上离 (x, z) 最近的那一点的弧长 */
+function arcNear(route: { pts: WorldPt[] }, x: number, z: number): number {
+  const P = route.pts;
+  let best = 0, bd = Infinity, cum = 0;
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i], l = Math.sqrt(dist2(a[0], a[2], b[0], b[2]));
+    const pr = projectOn(x, z, a[0], a[2], b[0], b[2]);
+    if (pr.d < bd - 1e-9) { bd = pr.d; best = cum + pr.t * l; }
+    cum += l;
+  }
+  return best;
 }
 
 /**
@@ -597,7 +637,9 @@ export function buildWorldField(world: HostWorldMap, opts: FieldOptions): WorldF
       P.splice(0, i + 1, hit); poly.wd.splice(0, i); poly.fl.splice(0, i);
     }
   };
-  const toRoute = (c: Cand): FieldRoute => {
+  const fieldRoute = (t: Poly): FieldRoute => ({ pts: t.pts.map((p) => [r2(p[0]), p[1] === null ? null : r2(p[1]), r2(p[2])] as WorldPt), wd: t.wd.map(r2), fl: t.fl, len: polyLen(t.pts) });
+  /** route：敌人走的路线。layout：排塔位用的那一份——拐角没被收窄时就是 route 本身，见下面「塔位」 */
+  const toRoute = (c: Cand): { route: FieldRoute; layout: FieldRoute } => {
     const ns = nodesOf(g, c.spawnNode, c.edges);
     const poly: Poly = { pts: [], wd: [], fl: [] };
     const first = g.nodes[ns[0]];
@@ -619,13 +661,17 @@ export function buildWorldField(world: HostWorldMap, opts: FieldOptions): WorldF
     }
     if (c.place && !startGate) cutInto(poly, c.place, false);
     if (home && !endGate) cutInto(poly, home, true);
-    const t = tidy(poly);
-    return { pts: t.pts.map((p) => [r2(p[0]), p[1] === null ? null : r2(p[1]), r2(p[2])] as WorldPt), wd: t.wd.map(r2), fl: t.fl, len: polyLen(t.pts) };
+    const t = tidy(poly), route = fieldRoute(t);
+    return { route, layout: t.inset ? fieldRoute(tidy(poly, false)) : route };
   };
-  const routes: FieldRoute[] = [toRoute(main)];
-  if (branch) routes.push(toRoute(branch));
+  const built = [toRoute(main), ...(branch ? [toRoute(branch)] : [])];
+  const routes: FieldRoute[] = built.map((b) => b.route);
 
   // —— 塔位：沿路线两侧、路缘外侧的真实空地
+  // 塔位每隔一段路程排一个。引道拐角收窄会让路线在拐角里多走 0.1–0.2，要是照着路线的路程排，拐角后面整条路上的塔位都得跟着挪，
+  // 挪过去正好不够间距的还会少掉一个。所以排位用的是没收窄的那份折线（layouts）：除了拐角里面那一小段，它和路线逐点重合，
+  // 塔位落在哪里只看它；记在塔位上的路程 s 再换算成路线上的路程。
+  const layouts: FieldRoute[] = built.map((b) => b.layout);
   const roadSegs: { ax: number; az: number; bx: number; bz: number; w: number }[] = [];
   const branchSet = new Set(branch ? branch.edges : []);
   g.edges.forEach((e, ei) => {
@@ -659,13 +705,13 @@ export function buildWorldField(world: HostWorldMap, opts: FieldOptions): WorldF
         const off = p.w / 2 + padR + 0.3 + extra;
         const x = r2(p.x - p.dz * off * side), z = r2(p.z + p.dx * off * side);
         if (!clear(x, z) || pads.some((q) => dist2(q.x, q.z, x, z) < minGap2)) continue;
-        pads.push({ x, z, branch: branchIdx, s: r2(s), side });
+        pads.push({ x, z, branch: branchIdx, s: r2(rt === routes[branchIdx] ? s : arcNear(routes[branchIdx], p.x, p.z)), side });
         return true;
       }
     }
     return false;
   };
-  routes.forEach((rt, bi) => {
+  layouts.forEach((rt, bi) => {
     const step = 1.5 * unit, quota = bi === 0 ? maxPads - (routes.length > 1 ? Math.min(8, Math.floor(maxPads / 3)) : 0) : maxPads;
     let k = 0;
     for (let s = 1.4 * unit; s <= rt.len - 1.0 * unit && pads.length < quota; s += step, k++) {
